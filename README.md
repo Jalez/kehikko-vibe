@@ -63,6 +63,12 @@ framing it: a session belongs to a project, and only a host says which.
 - **The context meter** under the session: the tokens in the context at the last request, from the
   conversation's record, with **Compact** (`/compact`) and **Clear** (`/clear`) typed only on a
   person's press, only while Vibe waits at its prompt.
+- **The footer.** In an app that draws module footers (protocol 2.38.0, `kehikot.footer`), the
+  context meter, the model, **Compact** and **Clear** (Clear with the app's confirm, neither for
+  agents) and the notes along the bottom — folder renamed, modules changed, session ended, install
+  failed, each with its button as a run (and the install log as a toggle) — are declared as footer
+  items (`src/view/footer.ts`) and the page draws none of its own. Any other app gets no footer and
+  the page draws its own line and rows as before.
 - **Settings** (Kehikot › Settings): resume conversations cut off by a restart; the model
   (`VIBE_ACTIVE_MODEL`); when Vibe asks before acting (`--agent ask | accept-edits | smart-approve`,
   or the person's Vibe config). Never `auto-approve`.

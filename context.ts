@@ -229,7 +229,7 @@ async function fileSoon(projectPath: string, place: NamedPlace, session: string,
 }
 
 /** Where a conversation belongs now, and what the host says of that place: what both kinds of notes are made of. */
-async function placed(projectPath: string, started: Started, session: string | null, token: string, needs: ContextNeeds): Promise<{ input: Parameters<typeof sessionNotes>[0] } > {
+async function placed(projectPath: string, started: Started, session: string | null, token: string, needs: ContextNeeds, messages = true): Promise<{ input: Parameters<typeof sessionNotes>[0] } > {
   /* Where it belongs now: the record's say, else where it was started (it is filed there once it is a conversation). */
   const read = readPlaces(projectPath)
   const places = read.ok ? read.value : null
@@ -238,7 +238,7 @@ async function placed(projectPath: string, started: Started, session: string | n
   const place = home && places ? named(home, places, started.place) : entry?.detached || entry?.ignored ? null : started.place
   const key = place ? placeKey(place) : null
   const kehikko = place?.kehikko && 'key' in place.kehikko ? place.kehikko.key : null
-  const answer = place ? await needs.host({ projectPath, projectId: started.projectId, token, kehikko }).catch(() => null) : null
+  const answer = place ? await needs.host({ projectPath, projectId: started.projectId, token, kehikko, messages }).catch(() => null) : null
   const hostDoor = answer?.doors.find((door) => door.module === 'kehikko')?.name ?? null
   return {
     input: {
@@ -250,6 +250,10 @@ async function placed(projectPath: string, started: Started, session: string | n
       self: SELF,
       connected: needs.doorsOf(token),
       key,
+      /* Unread messages from other agent sessions, handed by the host and now delivered (protocol 2.41.0). */
+      messages: answer?.messages ?? null,
+      messagesMore: answer?.messagesMore ?? 0,
+      messaging: answer?.messages ? { session: session } : null,
     },
   }
 }
@@ -275,7 +279,8 @@ export async function startText(asked: { session: string | null; token: string |
   if (!started) return null
   const root = projectRoot(started.projectPath)
   if (!root.ok) return null
-  const { input } = await placed(root.value, started, session && needs.program.isId(session) ? session : null, token, needs)
+  /* Messages are handed (and counted delivered) only for a new conversation, which reads this; a resumed one does not. */
+  const { input } = await placed(root.value, started, session && needs.program.isId(session) ? session : null, token, needs, asked.record)
   const notes = sessionNotes(input, 'start', null)
   if (notes.text === null) return null
   const text = withSkills(notes.text, token, needs)
@@ -310,7 +315,8 @@ export async function context(asked: { event: string; session: string; token: st
   const said: Said = notes.kind === 'start' || !told?.said ? { start: { at, text }, changes: [] } : { start: told.said.start, changes: [...told.said.changes, { at, text }].slice(-SAID_CHANGES) }
   writeTold(file, { ...notes.told, said })
   /* For a /clear: the session made next reads its folder's AGENTS.md again. */
-  const whole = sessionNotes(input, 'start', null).text
+  /* Without the messages: they were said once, at this prompt, and a /clear must not say them again. */
+  const whole = sessionNotes({ ...input, messages: null, messagesMore: 0 }, 'start', null).text
   if (whole !== null) writeNotes(needs.kitOf?.(token) ?? null, withSkills(whole, token, needs))
   return { hook_specific_output: { additional_context: text } }
 }

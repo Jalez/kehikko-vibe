@@ -1,4 +1,4 @@
-import { KEHIKOT_DIR, settingValueIssue, settingsDeclarationSchema, type SettingField } from 'kehikot-module-protocol'
+import { ACT_ON_MESSAGES_SETTING, KEHIKOT_DIR, WAKE_ON_MESSAGES_SETTING, settingValueIssue, settingsDeclarationSchema, type SettingField } from 'kehikot-module-protocol'
 
 /**
  * Vibe's settings as a host shows them (protocol 2.15.0, `declares.settings`), kept in the
@@ -50,6 +50,9 @@ export const SETTINGS: SettingField[] = settingsDeclarationSchema.parse([
     default: 'default',
     personOnly: true,
   },
+  /* (protocol 2.43.0) The protocol's own two, the same in every agent module: a message wakes an idle session, and may be acted on. */
+  WAKE_ON_MESSAGES_SETTING,
+  ACT_ON_MESSAGES_SETTING,
 ])
 
 /** A project's settings for this module. */
@@ -57,9 +60,13 @@ export interface Settings {
   resumeCutOff: boolean
   model: string
   agent: string
+  /** Type one line into an idle session's prompt when a message comes for it (protocol 2.43.0). */
+  wakeOnMessages: boolean
+  /** Sessions here may act on requests from other agent sessions in the project (protocol 2.43.0). */
+  actOnMessages: boolean
 }
 
-export const DEFAULTS: Settings = { resumeCutOff: true, model: '', agent: 'default' }
+export const DEFAULTS: Settings = { resumeCutOff: true, model: '', agent: 'default', wakeOnMessages: true, actOnMessages: true }
 
 /** A model alias as Vibe takes one: no spaces, no quotes. */
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/

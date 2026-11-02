@@ -28,7 +28,7 @@ framing it: a session belongs to a project, and only a host says which.
   conversation it is on).
 - **Disconnect and connect again**, as in the Codex module: "Connected to this kehikko" in the View
   menu, "Disconnect from this kehikko" in the Run menu, "Connect a conversation to this kehikko" in
-  the Go menu. Not confirmed (it can be undone), and no agent may press any of them.
+  the Go menu. Not confirmed (it can be undone), and no agent may press any of them. A disconnected conversation stays off every place until a person connects it again, and `/kehikot-here off` disconnects the conversation it is typed in.
 - **Filed with no command.** A conversation started here is filed under its place as soon as Vibe
   has a record of it and its hooks name it (its first tool call, or the end of its first turn), and
   is that kehikko's own when the kehikko had none. `/kehikot-here`, typed in a conversation started

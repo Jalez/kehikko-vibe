@@ -285,9 +285,12 @@ export type Command = keyof typeof COMMANDS
 /** How long after a command's text its Enter is typed: a slash-command menu settles on what was typed first. */
 const ENTER_AFTER = 250
 /**
- * A sighting of the prompt (`agents --json` saying `idle`) has to be this much later than a line
- * sent to it to count as the program having taken that line: measured on 2.1.310, a process still
- * says `idle` while its `UserPromptSubmit` hooks run, before the turn begins.
+ * How long after a line is sent a report of the prompt from BEFORE it still counts, when nothing has
+ * been reported since. Vibe 3.0.4 reports only a change (`take_program_report` keeps the last one),
+ * and works out its state from what is on its own screen (`program_state`: a turn generating, a
+ * queued message, a shell command) after every draw — so a line that starts a turn is reported as
+ * `working` at once, and a line that does not (`/help`, an empty Enter) is reported as nothing at
+ * all. Silence this long after a line means it is still at its prompt.
  */
 const TAKEN_AFTER = 5_000
 
@@ -647,10 +650,15 @@ export interface Run {
   owned: boolean
   /** The folder its doors file and plugin are kept in while it may be woken (`keptDirOf`). */
   kept: string | null
-  /** What `agents --json` last said its process is doing (`status`), and when that was asked. */
+  /**
+   * Where its program last said it was (OSC 7501, status.ts), whatever the turn: at its prompt
+   * (`idle`, `done`, `error` → `idle`), in a turn (`working` → `busy`), or waiting for an answer
+   * (`blocked` → `waiting`); and when that was said. Unlike `state`, a session just started or
+   * resumed is `idle` here at once: Vibe reports `idle` on its first draw. Null until it reports.
+   */
   status: ActiveStatus | null
   statusAt: number
-  /** When its program was last seen at its prompt: its turn ended (`Stop`), or `agents --json` said `idle`. 0 for never. */
+  /** When its program was last seen at its prompt: its turn ended, or it reported `idle`. 0 for never. */
   idleAt: number
   /** What is typed at its prompt and not sent, counted (`promptAfter` in input.ts). */
   prompt: Prompt
@@ -1012,7 +1020,7 @@ async function tailOfFile(file: string, most: number): Promise<string> {
  * of — in the Claude module this file shares its shape with. Vibe runs none: `active` never
  * lists a `background` kind, so this list stays empty. Its process is not
  * this module's and runs none of its hooks, so what it is doing is what the program says
- * (`agents --json`, its `state`), asked on the same clock as the views (`watch`).
+ * (the program's list of processes, `active` in program.ts — Vibe's leases, which say no state), asked on the same clock as the views (`watch`).
  *
  * Built afresh on every asking from two things and nothing else: what the program says is running,
  * and the project's `places.json` — each place's sessions followed to where the conversation is now
@@ -1447,7 +1455,7 @@ export class Runs {
 
   /**
    * Ask the program what each background session this module has a view of is
-   * doing (`agents --json`, its `state`), and make that the run's state — so
+   * doing (the program's list of processes, with a state where it says one — Vibe's never does), and make that the run's state — so
    * that it is said, listed and noticed exactly as a session that reports is.
    *
    * (In the Claude module a view runs `claude attach`, which runs no hooks; Vibe has no such
@@ -1464,7 +1472,7 @@ export class Runs {
       const asked = this.now()
       const running = await this.running()
       if (!running.known) {
-        if (this.watchFailed === 0) this.log(`vibe: could not ask what the background sessions are doing (${running.why === 'too-old' ? 'this copy has no `agents --json`' : 'the asking failed'}) — asking less often until it works`)
+        if (this.watchFailed === 0) this.log(`vibe: could not ask what the background sessions are doing (${running.why === 'too-old' ? 'this copy cannot be asked which process holds a conversation' : 'the asking failed'}) — asking less often until it works`)
         this.watchFailed += 1
         return
       }
@@ -1608,10 +1616,16 @@ export class Runs {
    * The context meter, and Compact and Clear
    * ---------------------------------------------------------------- */
 
-  /** Where a run's process is, as `agents --json` said it when it was asked at `at`. */
+  /**
+   * Where a run's process is, as the program's list of processes said it when it was asked at `at`.
+   * Vibe's leases say nothing of what a process is doing (`status` is always null in program.ts):
+   * then what its terminal reported (`reported`) stands. Vibe has no command that lists its
+   * processes with a status (3.0.4's commands are `mcp`, `config` and `update`).
+   */
   private placed(run: Run, listed: Active | null, at: number): void {
+    if (!listed?.status) return
     const before = this.readiness(run)
-    run.status = listed?.status ?? null
+    run.status = listed.status
     run.statusAt = at
     if (run.status === 'idle') run.idleAt = Math.max(run.idleAt, at)
     if (this.readiness(run) !== before) void this.meter(run)
@@ -1640,28 +1654,19 @@ export class Runs {
    * Why Compact and Clear cannot be pressed for this run now, or null when they can. They are
    * typed at its prompt, so only when its program is waiting there and nothing is typed at it —
    * never into a turn that is under way, a question on screen, or a line the person has not sent.
-   * Decided from the newest of what its hooks said (a session in a terminal here) and what
-   * `agents --json` says of its process, which has to be later than the last line sent to it.
+   * Decided from what its terminal last reported (`status`, OSC 7501 — see `reported`), which has
+   * to be later than the last line sent to it, or followed by nothing for `TAKEN_AFTER` since.
    */
   readiness(run: Run): string | null {
     if (run.what !== 'session' || run.ended) return 'The session is not running.'
     if (!run.settled) return 'Nothing has been said in this conversation yet.'
     if (run.prompt.chars > 0) return 'Something is typed at Vibe’s prompt and not sent. Send it or clear it first.'
-    const said: { at: number; idle: boolean; why: string }[] = []
-    const busy = 'Vibe is working. Compact and Clear wait until it is back at its prompt.'
-    const asking = 'Vibe is waiting for an answer on screen.'
-    if (run.secret !== null && run.state !== null) {
-      said.push({ at: run.stateSince, idle: run.state === 'finished', why: run.state === 'needs-you' ? asking : busy })
-    }
-    if (run.status !== null) {
-      said.push({ at: run.statusAt, idle: run.status === 'idle', why: run.status === 'waiting' ? asking : run.status === 'shell' ? 'A shell command is running in it.' : busy })
-    }
-    const newest = said.sort((a, b) => b.at - a.at)[0]
-    if (!newest) return 'It is not known yet whether Vibe is waiting at its prompt.'
-    if (!newest.idle) return newest.why
-    /* A turn's end its own hook said (`Stop`) comes after the turn; `agents --json` may say `idle` before one begins. */
-    const taken = newest.at === run.stateSince && run.state === 'finished' ? 0 : TAKEN_AFTER
-    if (newest.at <= run.prompt.sentAt + taken) return 'Vibe has not been seen at its prompt since a line was sent to it.'
+    if (run.status === null) return 'It is not known yet whether Vibe is waiting at its prompt.'
+    if (run.status === 'waiting') return 'Vibe is waiting for an answer on screen.'
+    if (run.status === 'shell') return 'A shell command is running in it.'
+    if (run.status !== 'idle') return 'Vibe is working. Compact and Clear wait until it is back at its prompt.'
+    /* At its prompt since the last line: said after it, or nothing said for a while after it. */
+    if (run.statusAt <= run.prompt.sentAt && this.now() - run.prompt.sentAt < TAKEN_AFTER) return 'Vibe has not been seen at its prompt since a line was sent to it.'
     /* Not what it prints: an idle program redraws when its terminal gains or loses the keyboard (measured), so printing says nothing here. */
     return null
   }
@@ -1843,7 +1848,7 @@ export class Runs {
 
   /**
    * A conversation this module did not start was reported in a project — by
-   * Vibe's SessionStart hook or `agents --json`. Recorded as not yet
+   * its own hooks or its leases. Recorded as not yet
    * assigned (one this module runs, or one that belongs somewhere, is left as
    * it is), and every page following that project reads its list again.
    */
@@ -2124,7 +2129,7 @@ export class Runs {
    * It moves without this module doing anything: Vibe resumes a
    * conversation under a new id, and a person may `/resume` another one or
    * `/clear` inside the terminal. Asked of the program itself
-   * (`agents --json`, which lists each process with the session it holds, by
+   * (Vibe's leases, `active` in program.ts: each process with the session it holds, by
    * pid); a copy that cannot be asked is followed by its record instead —
    * the conversation carried on from the recorded one that nobody else holds.
    *
@@ -2704,6 +2709,12 @@ export class Runs {
    */
   reported(run: Run, report: Report): void {
     if (run.what !== 'session' || run.ended) return
+    /* Where it is, for Compact, Clear and the message waker (`readiness`): every report, the first `idle` too. */
+    const before = this.readiness(run)
+    run.status = report.state === 'working' ? 'busy' : report.state === 'blocked' ? 'waiting' : 'idle'
+    run.statusAt = this.now()
+    if (run.status === 'idle') run.idleAt = Math.max(run.idleAt, run.statusAt)
+    if (this.readiness(run) !== before) void this.meter(run)
     if (report.state === 'working' && run.state !== 'working' && run.state !== 'needs-you') {
       /* A new turn: what the last one was about to be tagged with is over. */
       run.told = null

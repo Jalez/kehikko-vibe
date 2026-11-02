@@ -169,13 +169,48 @@ few seconds, for its idle sessions only.
 - It never reads what a hook is handed beyond the conversation's ids and a subagent's name, and never
   reads a conversation's history.
 
-## Not verified against a real Vibe
+## Verified against vibe 3.0.4
 
-The mechanisms were read in the source; with no Vibe installed and no Mistral account used, these
-are unmeasured and are the first things to check on a machine that has it: that the TUI's OSC 7501
-query reaches this module's pty and the reports follow; that `--add-dir` folders' hooks, skills and
-`AGENTS.md` load in an interactive session as the source says; that `VIBE_MCP_SERVERS` parses as
-JSON; when a new session's `CURRENT` first appears.
+Checked on 2026-11-02 against the `vibe 3.0.4` installed with `uv tool` (`~/.local/bin/vibe`, which
+execs the bundled Rust TUI `vibe-rs` and its Python `vibe-app-server`), and the source at the
+`v3.0.4` tag of github.com/mistralai/mistral-vibe. No model was called by these checks and no
+session was started for them: only `vibe --help`, `vibe config --help`, `vibe config schema` and
+`vibe mcp --help` were run; the rest was read — the installed package, the tagged source, and the
+records and process of a session the person was already running here.
+
+- **Vibe has no command that lists its processes or says what one is doing.** Its commands are
+  `mcp`, `config` (`schema`) and `update`; there is no `agents` or `--json` listing. Which process
+  holds a conversation is its leases (`<save_dir>/active/<id>.lock` and `.lock.json`), which say
+  nothing about state. Nothing here asks for one.
+- **State comes from the terminal, and it arrives.** `vibe-rs` writes OSC 7501 reports
+  (`state=idle|working|done|error|blocked:kind=permission|blocked:kind=question:app=vibe[:msg=…]`;
+  `program_status.rs`, the strings are in the installed binary) whenever its output is a terminal
+  (`program_status::supported`) and `experimental_enable_tab_status` is on (its default, `vibe config
+  schema`). The terminal's answer to its `ESC ] 7501 ; ? ESC \` query decides only how the tab title is
+  drawn, never whether reports go out. It reports a change only, after a draw, and reports `idle` on
+  its first draw. Seen live: a running session here was `working` from the second its turn began, to
+  the millisecond of the turn's start in Vibe's own journal.
+- **The hooks run.** The kit's `.vibe/hooks.toml` (from `--add-dir`) is loaded as a project hooks
+  file (`HarnessFilesManager.hook_files`; `load_hooks_from_fs`), its `post_tool` hooks were bound and
+  run after every tool in that session (`hook_binding_ids` in its journal), with this module's
+  environment (`_spawn_hook_command` inherits it). Vibe has only `pre_tool`, `post_tool` and
+  `post_agent` hooks: no hook at a prompt, at a session's start or at an approval, so hooks can never
+  say a session is at its prompt. They name the conversation and end a turn for a research tag;
+  state is the terminal's.
+- **What was wrong.** Compact, Clear and the message waker decided "at its prompt" only from a turn's
+  end (`done`, or `idle` after a turn) and from a process list Vibe does not have. A session started
+  or resumed and left at its prompt — every session after a restart of the app, until its person
+  typed — was never ready: its first `idle` was dropped. Now every report says where it is (`status`
+  in live.ts): `idle` at once on its first draw, `working`, or waiting for an answer, and a line sent
+  that starts no turn (Vibe then reports nothing) counts as back at its prompt after five quiet
+  seconds. The Inbox state is unchanged: an `idle` before any turn is still no state, never a
+  "finished".
+- **The stand-in does as Vibe does**: it reports only on a terminal, from its first draw, each change
+  once, whether or not the query was answered; `/help` is a command that reports nothing. The tests
+  run it on a pty (`test/tell.test.ts`).
+
+Still unmeasured: `VIBE_MCP_SERVERS` parsing beyond what a running session shows, and when a new
+session's `CURRENT` first appears.
 
 ## Checks
 

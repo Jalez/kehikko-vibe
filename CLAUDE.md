@@ -18,6 +18,9 @@ and cannot do here.
 - **State is what Vibe says on its terminal** (OSC 7501, `status.ts`): the pty answers its query and
   reads its reports. Hooks (`post_tool`, `post_agent`) only name the conversation, end a turn for a
   research tag, and carry what changed (`context.sh`). Never read the screen to guess a state.
+  Every report also sets where it is (`run.status`): what Compact, Clear and the message waker wait on
+  (`readiness`), the first `idle` before any turn included. Vibe has no command that lists processes
+  or their state (README, "Verified against vibe 3.0.4"); never write one in.
 - **Vibe's records are read, never written**: `<save_dir>/unified/<id>/CURRENT` and the generation's
   `projection-state.json` (title, preview, cwd, model, `context_usage`), and the leases in
   `<save_dir>/active/`. The history chunks and the journal are never read.

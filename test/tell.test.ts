@@ -70,6 +70,38 @@ function ran(file: string, args: string[], env: NodeJS.ProcessEnv, input = '', c
   })
 }
 
+/**
+ * Run a program on a terminal of its own (Bun's pty, as `pty.ts` under the built server), typing
+ * `input` at it, to its end. Vibe reports its state only when its output is a terminal
+ * (`program_status::supported`), so the stand-in is run the way this module runs the real one.
+ */
+function ranOnTerminal(file: string, args: string[], env: NodeJS.ProcessEnv, input: string, cwd: string): Promise<{ code: number | null; out: string; ms: number }> {
+  const began = Date.now()
+  const decoder = new TextDecoder()
+  let out = ''
+  const clean: Record<string, string> = {}
+  for (const [key, value] of Object.entries(env)) if (value !== undefined) clean[key] = value
+  const child = Bun.spawn([file, ...args], {
+    cwd,
+    env: clean,
+    terminal: { cols: 120, rows: 40, data: (_terminal, bytes) => void (out += decoder.decode(bytes, { stream: true })) },
+  })
+  /* Raw, as a TUI puts its terminal: nothing typed is echoed back into what it printed. */
+  child.terminal!.setRawMode?.(true)
+  child.terminal!.write(input)
+  const timer = setTimeout(() => child.kill('SIGKILL'), 15_000)
+  return child.exited.then(async (code) => {
+    clearTimeout(timer)
+    await new Promise((done) => setTimeout(done, 50))
+    try {
+      child.terminal!.close()
+    } catch {
+      /* Closed. */
+    }
+    return { code, out, ms: Date.now() - began }
+  })
+}
+
 const env = (more: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({ PATH: '/usr/bin:/bin', [TELL_ENV.port]: String(port), [TELL_ENV.secret]: SECRET, [TELL_ENV.session]: SESSION, ...more })
 const HANDED = JSON.stringify({ session_id: THREAD, prompt: 'the person’s words, which are nobody else’s', tool_input: { command: 'rm -rf /' } })
 
@@ -198,7 +230,7 @@ describe('the stand-in program reports as the real one does', () => {
     const hooks = TELLS.map((one) => ({ event: one.event, ...(one.matcher ? { matcher: one.matcher } : {}), commands: [{ command: tellLine(one.says, TELL), timeout: 5 }] }))
     if (withHooks) writeFileSync(join(kit, '.vibe', 'hooks.toml'), PROGRAM.hooksFile(hooks))
     const args = [...PROGRAM.fresh(SESSION), '--add-dir', kit]
-    const done = await ran(join(bin, 'vibe'), args, env({ HOME: home, VIBE_HOME: join(home, 'vibe'), KEHIKOT_TEST_BUN: process.execPath, ...more }), `${REPLY}${lines.join('\n')}\n/exit\n`, home)
+    const done = await ranOnTerminal(join(bin, 'vibe'), args, env({ HOME: home, VIBE_HOME: join(home, 'vibe'), KEHIKOT_TEST_BUN: process.execPath, ...more }), `${more.NO_REPLY ? '' : REPLY}${[...lines, '/exit'].join('\r')}\r`, home)
     const events = heard.map((one) => new URL(one.url, 'http://x').searchParams.get('event'))
     const said = new StatusReader().feed(done.out)
     const states = said.reports.map((one) => (one.state === 'idle' ? 'idle' : PROGRAM.signal(one.state))).filter(Boolean)
@@ -255,6 +287,25 @@ describe('the stand-in program reports as the real one does', () => {
     const { events, states } = await session(['hello'], {}, false)
     expect(events).toEqual([])
     expect(states).toEqual(['idle', 'working', 'finished'])
+  })
+
+  test('it reports on a terminal whether or not the terminal answered its query, and the first draw is `idle`', async () => {
+    const { states } = await session(['hello'], { NO_REPLY: '1' })
+    expect(states).toEqual(['idle', 'working', 'finished'])
+  })
+
+  test('a command of its own screen is no turn and reports nothing; /compact works and goes back where it was', async () => {
+    expect((await session(['/help'])).states).toEqual(['idle'])
+    expect((await session(['hello', '/compact'])).states).toEqual(['idle', 'working', 'finished', 'working', 'finished'])
+  })
+
+  test('with its output not a terminal, or tab status turned off, it reports nothing', async () => {
+    expect((await session(['hello'], { STANDIN_NOREPORTS: '1' })).states).toEqual([])
+    heard.length = 0
+    const home = mkdtempSync(join(scratch, 'piped-'))
+    const piped = await ran(STAND_IN, PROGRAM.fresh(SESSION), env({ HOME: home, VIBE_HOME: join(home, 'vibe'), KEHIKOT_TEST_BUN: process.execPath }), `${REPLY}hello\n/exit\n`, home)
+    expect(piped.out).toContain('you said: hello')
+    expect(new StatusReader().feed(piped.out).reports).toEqual([])
   })
 
   test('with its server gone it carries on exactly as it would have', async () => {

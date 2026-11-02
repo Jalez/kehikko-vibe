@@ -1,7 +1,7 @@
 /**
  * A stand-in for the Mistral Vibe CLI, for tests: it takes the arguments this module passes, keeps
  * a record where Vibe 3.0.4 keeps one, holds its lease while it runs, says its state on its terminal
- * the way Vibe's TUI does (OSC 7501, once the terminal answers its query), and runs the hooks of
+ * the way Vibe's TUI does (OSC 7501: on a terminal, from its first draw, each change once), and runs the hooks of
  * every `--add-dir` folder's `.vibe/hooks.toml` at the moments Vibe's docs say (program.ts). It
  * never talks to any model.
  *
@@ -17,7 +17,8 @@
  *   /question              working, blocked:kind=question; the next line answers
  *   /work                  working, dots until /interrupt (idle)
  *   /subagent <name> <task>   a subagent's session, and post_agent with its parent
- *   /compact               fewer tokens in the record
+ *   /compact               working, fewer tokens in the record, back where it was
+ *   /help                  printed, and nothing reported: no turn
  *   /clear                 a new conversation (a new id), its AGENTS.md read again
  *   /mcp <server> <tool>   calls that door's tool, as Vibe would
  *   /exit                  ends
@@ -111,10 +112,20 @@ const lease = (id: string, on: boolean) => {
   }
 }
 
-/* Its state on its terminal: asked once at start; reported only if the terminal answered. */
-let reports = false
+/*
+ * Its state on its terminal, as Vibe 3.0.4 says it (cli-rust `terminal_notifier.rs`): reports are on
+ * whenever its output is a terminal (`program_status::supported`) and tab status is on, which it is
+ * by default — the terminal's answer to the query only changes how the title is drawn, never
+ * whether reports go out. Only a change is reported (`take_program_report` keeps the last one), and
+ * the first draw reports `idle`. STANDIN_NOREPORTS=1: tab status turned off in the person's config.
+ */
+const reports = process.stdout.isTTY === true && !process.env.STANDIN_NOREPORTS
+let reported = ''
 const report = (state: string) => {
-  if (reports) process.stdout.write(`\u001b]7501;state=${state}:app=vibe\u001b\\`)
+  const said = `\u001b]7501;state=${state}:app=vibe\u001b\\`
+  if (!reports || said === reported) return
+  reported = said
+  process.stdout.write(said)
 }
 
 async function fire(type: string, more: Record<string, unknown> = {}, tool?: string): Promise<void> {
@@ -151,6 +162,8 @@ const notes = notesOf()
 if (notes) out(`notes: ${notes.split('\n').find((one) => one.trim() && !one.startsWith('#'))?.slice(0, 120) ?? ''}\n`)
 lease(session, true)
 process.stdout.write('\u001b]7501;?\u001b\\')
+/* Its first draw. */
+report('idle')
 
 let dots: ReturnType<typeof setInterval> | null = null
 let asking = false
@@ -175,12 +188,10 @@ const start = async () => {
 const waited = setTimeout(() => void start(), 500)
 for await (const chunk of process.stdin) {
   buffer += String(chunk)
-  /* The terminal's answer to the query: reports on. */
+  /* The terminal's answer to the query: terminal noise, never input (`TerminalInputFilter`). */
   if (buffer.includes('\u001b]7501;?\u001b\\')) {
     buffer = buffer.replace('\u001b]7501;?\u001b\\', '')
-    reports = true
     clearTimeout(waited)
-    report('idle')
     await start()
   }
   let at: number
@@ -236,10 +247,15 @@ for await (const chunk of process.stdin) {
       report('done')
       out(`subagent ${name} done\n`)
     } else if (said === '/compact') {
+      /* A compaction is generating: working, then back where it was. */
+      const was = reported.match(/state=([a-z:=]+):app/)?.[1] ?? 'idle'
+      report('working')
+      report(was)
       tokens = 3000
       if (recorded) write(session)
       out('compacted\n')
     } else if (said === '/clear') {
+      report('idle')
       lease(session, false)
       session = newId()
       preview = ''
@@ -247,6 +263,9 @@ for await (const chunk of process.stdin) {
       lease(session, true)
       const again = notesOf()
       out(`cleared${again ? `; notes: ${again.split('\n').find((one) => one.trim() && !one.startsWith('#'))?.slice(0, 120) ?? ''}` : ''}\n`)
+    } else if (said === '/help') {
+      /* A command of its own screen: no turn, so no change to report. */
+      out('help: the stand-in has no help\n')
     } else if (said.startsWith('/mcp ')) {
       const [, server, tool, ...args] = said.split(' ')
       const url = doors.get(server ?? '')

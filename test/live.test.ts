@@ -2417,6 +2417,68 @@ describe('a message wakes an idle session (protocol 2.43.0)', () => {
   })
 })
 
+describe('at its prompt as its terminal says it, before any turn too (verified against Vibe 3.0.4)', () => {
+  /** What Vibe 3.0.4's TUI writes (`encode_report`), the first one on its first draw. */
+  const osc = (state: string) => `\u001b]7501;state=${state}:app=vibe\u001b\\`
+  async function resumed(options: { tells?: boolean } = { tells: true }) {
+    const dir = project()
+    const w = world(options.tells ? { tells: true, port: 4999 } : { tells: false })
+    w.records(dir, A, 'tighten the methods')
+    const run = await w.runs.open(ask(dir, A), new Watcher())
+    if (!isRun(run)) throw new Error('not opened')
+    await settle()
+    run.token = freshToken()
+    return { w, run }
+  }
+
+  test('a conversation resumed and left at its prompt is ready at its first `idle` — and has no state to be noticed for', async () => {
+    const { w, run } = await resumed()
+    expect(w.runs.readiness(run)).toBe('It is not known yet whether Vibe is waiting at its prompt.')
+    w.ptys[0]!.says(osc('idle'))
+    expect(run.state).toBeNull()
+    expect(w.runs.readiness(run)).toBeNull()
+    expect(w.runs.wakeSessions().find((one) => one.key === run.id)?.idle).toBe(true)
+    expect(w.runs.command(run, 'compact')).toBe(true)
+  })
+
+  test('without hooks (nowhere to report to), the terminal alone decides', async () => {
+    const { w, run } = await resumed({ tells: false })
+    expect(run.secret).toBeNull()
+    w.ptys[0]!.says(osc('working'))
+    expect(w.runs.readiness(run)).toBe('Vibe is working. Compact and Clear wait until it is back at its prompt.')
+    w.later(1_000)
+    w.ptys[0]!.says(osc('done'))
+    expect(w.runs.readiness(run)).toBeNull()
+    w.later(1_000)
+    w.ptys[0]!.says(osc('blocked:kind=question'))
+    expect(w.runs.readiness(run)).toBe('Vibe is waiting for an answer on screen.')
+  })
+
+  test('a line that starts no turn is reported as nothing: still at its prompt once it has been quiet a while', async () => {
+    const { w, run } = await resumed()
+    w.ptys[0]!.says(osc('idle'))
+    w.later(1_000)
+    w.runs.type(run, '/help\r')
+    expect(w.runs.readiness(run)).toBe('Vibe has not been seen at its prompt since a line was sent to it.')
+    w.later(4_000)
+    expect(w.runs.readiness(run)).toBe('Vibe has not been seen at its prompt since a line was sent to it.')
+    w.later(1_500)
+    expect(w.runs.readiness(run)).toBeNull()
+  })
+
+  test('a line that starts a turn is `working` at once, and stays not ready however long it takes', async () => {
+    const { w, run } = await resumed()
+    w.ptys[0]!.says(osc('idle'))
+    w.later(1_000)
+    w.runs.type(run, 'do the thing\r')
+    w.ptys[0]!.says(osc('working'))
+    w.later(60_000)
+    expect(w.runs.readiness(run)).toBe('Vibe is working. Compact and Clear wait until it is back at its prompt.')
+    w.ptys[0]!.says(osc('done'))
+    expect(w.runs.readiness(run)).toBeNull()
+  })
+})
+
 describe('Compact and Clear: only at the prompt, only on a press', () => {
   const C2 = '33333333-3333-4333-8333-333333333333'
   const after = (ms: number) => new Promise((done) => setTimeout(done, ms))

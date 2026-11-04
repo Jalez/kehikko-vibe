@@ -8,7 +8,8 @@ import type { Duplex } from 'node:stream'
 
 import { PROJECT_ID, projectFile, readProjectFile } from 'kehikot-module-protocol'
 import type { RunSockets } from 'kehikot-module-protocol/run'
-import { messageWaker, mintTicket, sameTicket, type WakeSession } from 'kehikot-module-protocol/serve'
+import { messageDelivery, mintTicket, pasted, sameTicket, type DeliverySession } from 'kehikot-module-protocol/serve'
+import type { DeliveryState } from 'kehikot-module-protocol'
 
 import { emptyPrompt, promptAfter, typedByPerson, type Prompt } from './input.ts'
 import { Gauges } from './gauges.ts'
@@ -284,6 +285,10 @@ export const COMMANDS = { compact: '/compact', clear: '/clear' } as const
 export type Command = keyof typeof COMMANDS
 /** How long after a command's text its Enter is typed: a slash-command menu settles on what was typed first. */
 const ENTER_AFTER = 250
+/** How recently a conversation was used for a message to resume it when it is asleep: older unread messages are never unread (`MESSAGES_UNREAD_MS`). */
+const ASLEEP_FOR = 24 * 60 * 60_000
+/** How long a session resumed for a message is given to come to its prompt before what came is typed. */
+const RESUME_READY_MS = 60_000
 /**
  * How long after a line is sent a report of the prompt from BEFORE it still counts, when nothing has
  * been reported since. Vibe 3.0.4 reports only a change (`take_program_report` keeps the last one),
@@ -1176,6 +1181,8 @@ export class Runs {
    * the background sessions of every epic and part of it are watched, not only those with a view.
    */
   private readonly projects = new Set<string>()
+  /** The asleep conversations last listed for delivery (`deliverySessions`), by session: where to resume each. */
+  private readonly asleep = new Map<string, { projectPath: string; place: NamedPlace }>()
   /** The background sessions of those projects' places that no run here is a view of, by session (see `Unviewed`). */
   private readonly unviewed = new Map<string, Unviewed>()
   /** The state each conversation was last seen in, and since when, by session id (see `entered`). */
@@ -1733,17 +1740,28 @@ export class Runs {
    * to be later than the last line sent to it, or followed by nothing for `TAKEN_AFTER` since.
    */
   readiness(run: Run): string | null {
-    if (run.what !== 'session' || run.ended) return 'The session is not running.'
-    if (!run.settled) return 'Nothing has been said in this conversation yet.'
-    if (run.prompt.chars > 0) return 'Something is typed at Vibe’s prompt and not sent. Send it or clear it first.'
-    if (run.status === null) return 'It is not known yet whether Vibe is waiting at its prompt.'
-    if (run.status === 'waiting') return 'Vibe is waiting for an answer on screen.'
-    if (run.status === 'shell') return 'A shell command is running in it.'
-    if (run.status !== 'idle') return 'Vibe is working. Compact and Clear wait until it is back at its prompt.'
+    const stands = this.standing(run)
+    return stands.state === 'idle' ? null : stands.why
+  }
+
+  /**
+   * Where a run stands, for Compact and Clear (`readiness`) and for a message typed into it
+   * (protocol 2.48.0, `DeliveryState`): idle at its prompt, busy with a turn (or a line just sent),
+   * asking the person, with text the person typed and has not sent, or not known — with the
+   * sentence Compact and Clear say for each.
+   */
+  standing(run: Run): { state: DeliveryState; why: string } {
+    if (run.what !== 'session' || run.ended) return { state: 'unknown', why: 'The session is not running.' }
+    if (!run.settled) return { state: 'unknown', why: 'Nothing has been said in this conversation yet.' }
+    if (run.prompt.chars > 0) return { state: 'typing', why: 'Something is typed at Vibe’s prompt and not sent. Send it or clear it first.' }
+    if (run.status === null) return { state: 'unknown', why: 'It is not known yet whether Vibe is waiting at its prompt.' }
+    if (run.status === 'waiting') return { state: 'asks', why: 'Vibe is waiting for an answer on screen.' }
+    if (run.status === 'shell') return { state: 'unknown', why: 'A shell command is running in it.' }
+    if (run.status !== 'idle') return { state: 'busy', why: 'Vibe is working. Compact and Clear wait until it is back at its prompt.' }
     /* At its prompt since the last line: said after it, or nothing said for a while after it. */
-    if (run.statusAt <= run.prompt.sentAt && this.now() - run.prompt.sentAt < TAKEN_AFTER) return 'Vibe has not been seen at its prompt since a line was sent to it.'
+    if (run.statusAt <= run.prompt.sentAt && this.now() - run.prompt.sentAt < TAKEN_AFTER) return { state: 'busy', why: 'Vibe has not been seen at its prompt since a line was sent to it.' }
     /* Not what it prints: an idle program redraws when its terminal gains or loses the keyboard (measured), so printing says nothing here. */
-    return null
+    return { state: 'idle', why: '' }
   }
 
   /** Say a run's context, and whether Compact and Clear can be pressed, to its viewers when it changed — and to `viewer` regardless. */
@@ -1797,47 +1815,117 @@ export class Runs {
   }
 
   /**
-   * The sessions a message may wake (protocol 2.43.0, `messageWaker`): every run of a session this
-   * process started and holds the terminal of — never a view of one started elsewhere (no token, or
-   * `joined` and not `owned`). Idle is what Compact and Clear wait on (`readiness`): back at its
-   * prompt since the last line sent, nothing typed and unsent, not waiting for an answer.
+   * The sessions a message may be typed into (protocol 2.48.0, `messageDelivery`), keyed by session
+   * id. Every run of a session this process started and holds the terminal of — never a view of one
+   * started elsewhere (no token, or `joined` and not `owned`) — where it stands (`standing`). And
+   * every conversation of a watched project this module gave a token to, used in the last day, with a
+   * place, that no run here holds: asleep (put away, or not open since a restart).
    */
-  wakeSessions(): WakeSession[] {
-    const out: WakeSession[] = []
+  deliverySessions(): DeliverySession[] {
+    const out: DeliverySession[] = []
+    const held = new Set<string>()
     for (const run of this.runs.values()) {
-      if (run.what !== 'session' || run.ended || run.rested) continue
+      if (run.what !== 'session' || run.ended) continue
+      const key = run.settled ?? run.id
+      held.add(key)
+      held.add(run.id)
+      if (run.rested) continue
       const settings = readSettings(run.projectPath)
       out.push({
-        key: run.id,
+        key,
         token: run.token,
         own: run.token !== null && (run.joined === null || run.owned),
-        idle: this.readiness(run) === null,
+        state: this.standing(run).state,
         wake: settings.wakeOnMessages,
         act: settings.actOnMessages,
       })
     }
+    this.asleep.clear()
+    const since = this.now() - ASLEEP_FOR
+    for (const projectPath of this.projects) {
+      const read = readPlaces(projectPath)
+      if (!read.ok) continue
+      const settings = readSettings(projectPath)
+      for (const [id, entry] of Object.entries(read.value.sessions)) {
+        if (held.has(id) || !entry.token || entry.ignored) continue
+        const used = Date.parse(entry.lastActive ?? entry.added)
+        if (!Number.isFinite(used) || used < since) continue
+        const at = placeEntryFor(read.value, id)
+        if (!at) continue
+        this.asleep.set(id, { projectPath, place: placeOf(at) })
+        const state = this.unviewed.get(id)?.state
+        out.push({
+          key: id,
+          token: entry.token,
+          own: true,
+          state: state === 'working' ? 'busy' : state === 'needs-you' ? 'asks' : 'asleep',
+          wake: settings.wakeOnMessages,
+          act: settings.actOnMessages,
+        })
+      }
+    }
     return out
   }
 
+  /** The run that holds a session now, by its id or the id it was opened as. */
+  private runOf(key: string): Run | null {
+    for (const run of this.runs.values()) if (run.what === 'session' && !run.ended && (run.settled === key || run.id === key)) return run
+    return null
+  }
+
   /**
-   * Type the waker's one line (`wakeLine`: Kehikot's words from host-stamped fields, never a
-   * message's body) at an idle session's prompt and send it, through the pty the person's keys go
-   * to, exactly as Compact and Clear are typed. False when it is not idle after all.
+   * Type messages (`typedMessages`: Kehikot's frame around each sender's words) into a session's
+   * prompt as one bracketed paste and send it, through the pty the person's keys go to, exactly as
+   * Compact and Clear are typed. At its prompt, or while it works — Vibe takes a line typed
+   * during a turn. Never into a question on screen or text the person has not sent. False when it
+   * cannot be now.
    */
-  wake(id: string, line: string): boolean {
-    const run = this.runs.get(id)
-    if (!run || run.what !== 'session' || run.ended || this.readiness(run) !== null) return false
-    const text = line.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim()
-    if (!text) return false
+  deliver(key: string, text: string): boolean {
+    const run = this.runOf(key)
+    if (!run || run.rested) return false
+    const state = this.standing(run).state
+    if (state !== 'idle' && state !== 'busy') return false
+    if (!text.trim()) return false
     const now = this.now()
     run.prompt = { chars: 0, sentAt: now + ENTER_AFTER }
     run.stirredAt = now
-    run.pty.write(text)
+    run.pty.write(pasted(text))
     setTimeout(() => {
       if (!run.ended) run.pty.write('\r')
     }, ENTER_AFTER).unref?.()
-    this.log(`vibe: a message came for ${run.settled ?? run.id}, idle at its prompt; one line typed to wake it`)
+    this.log(`vibe: a message came for ${run.settled ?? run.id}, ${state === 'idle' ? 'idle at its prompt' : 'working'}; typed into it`)
     return true
+  }
+
+  /**
+   * Resume an asleep session for a message (protocol 2.48.0), the way a place resumes one: opened
+   * here with no viewer, and the messages typed in as its first prompt once it is at its prompt.
+   * Never one open in another process (`start` refuses it).
+   */
+  async resumeFor(key: string, text: string): Promise<boolean> {
+    const where = this.asleep.get(key)
+    if (!where || this.runOf(key)) return false
+    const run = await this.start(where.projectPath, key, {
+      what: 'session',
+      projectPath: where.projectPath,
+      projectId: projectIdAt(where.projectPath),
+      place: where.place,
+      session: key,
+      unwatched: true,
+      cols: 120,
+      rows: 40,
+    })
+    if ('code' in run) {
+      this.log(`vibe: a message came for ${key}, which could not be resumed — ${run.why}`)
+      return false
+    }
+    this.log(`vibe: a message came for ${key}, asleep; resumed, and it is typed in at its prompt`)
+    const until = this.now() + RESUME_READY_MS
+    while (!run.ended && this.now() < until) {
+      if (this.standing(run).state === 'idle') return this.deliver(run.settled ?? run.id, text)
+      await new Promise((done) => setTimeout(done, 500))
+    }
+    return false
   }
 
   /** Whether the person allowed the session behind a token to act on messages (protocol 2.43.0): its project's setting. */
@@ -3270,7 +3358,8 @@ export function theRuns(log: (line: string) => void = () => {}): Runs {
   })
   held[HELD] = runs
   /* A message to a session idle at its prompt wakes it (protocol 2.43.0): the protocol's rule, typed through `wake`. */
-  messageWaker({ module: 'kehikot.vibe', sessions: () => runs.wakeSessions(), type: (id, line) => runs.wake(id, line), log }).start()
+  /* Vibe takes a line typed during a turn (protocol 2.48.0, docs/agent-messages.md): a working session is typed into at once. */
+  messageDelivery({ module: 'kehikot.vibe', queues: true, sessions: () => runs.deliverySessions(), type: (key, text) => runs.deliver(key, text), resume: (key, text) => runs.resumeFor(key, text), log }).start()
   /* The folders of sessions a process that stopped without ending them left behind: removed now (skills.ts). */
   try {
     const swept = sweepKits()

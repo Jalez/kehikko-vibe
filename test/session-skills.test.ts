@@ -6,8 +6,8 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { SessionDoor } from '../doorConfig.ts'
-import { SKILLS_HEADING, forVibe, kitSkills, removeKit, sessionKit, skillDeclarations, skillText, skillsText } from '../skills.ts'
+import { hostPlace, type SessionDoor } from '../doorConfig.ts'
+import { SKILLS_HEADING, forVibe, heldSkills, kitSkills, removeKit, sessionKit, skillDeclarations, skillText, skillsText } from '../skills.ts'
 
 const scratch: string[] = []
 const dir = () => {
@@ -186,5 +186,46 @@ describe('a skill written for Claude Code, said for Vibe', () => {
     expect(said).toContain("a skill of the person's own already has the name (`/name` runs theirs): `/journey` (Journeys).")
     expect(skillsText([])).toBeNull()
     expect(skillText('kehikot-here')).toContain('/api/here')
+  })
+})
+
+describe('the skills the person wrote for the kehikko (protocol 2.53.0)', () => {
+  const mine = (name: string, body: string) => ({ name, description: `When ${name}.`, text: `---\nname: ${name}\ndescription: "When ${name}."\n---\n\n${body}\n` })
+
+  test('are written as handed, held, keep a name a module also offers, and are left to the notes to list', async () => {
+    const one = module({ browse: { text: text('browse', 'The module’s.') } })
+    const log: string[] = []
+    const kit = await sessionKit([door('kehikot.browser', one)], { ...options({ log }), kehikkoSkills: [mine('browse', 'The person’s own.'), { name: 'bad', description: 'x', text: 'no front matter' }] })
+    const file = join(kit.dir, '.vibe', 'skills', 'browse', 'SKILL.md')
+    expect(readFileSync(file, 'utf8')).toBe(mine('browse', 'The person’s own.').text)
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    expect(given(kit.dir)).not.toContain('bad')
+    expect(heldSkills(kitSkills(kit.dir))).toContain('browse')
+    expect(kitSkills(kit.dir).find((skill) => skill.name === 'browse')).toMatchObject({ kehikko: true, state: 'callable' })
+    expect(log.some((line) => line.includes('skill browse from kehikot.browser left out — this kehikko has a skill by that name'))).toBe(true)
+    expect(skillsText(kitSkills(kit.dir))).not.toContain('/browse')
+    removeKit(kit.dir)
+    expect(existsSync(kit.dir)).toBe(false)
+  })
+
+  test('one a skill of the person’s own by that name hides is not written, and not held', async () => {
+    const personal = dir()
+    mkdirSync(join(personal, 'house-style'), { recursive: true })
+    writeFileSync(join(personal, 'house-style', 'SKILL.md'), text('house-style'))
+    const kit = await sessionKit([], { ...options({ personal: [personal] }), kehikkoSkills: [mine('house-style', 'Short sentences.')] })
+    expect(given(kit.dir)).not.toContain('house-style')
+    expect(readFileSync(join(personal, 'house-style', 'SKILL.md'), 'utf8')).toBe(text('house-style'))
+    expect(heldSkills(kitSkills(kit.dir))).not.toContain('house-style')
+    removeKit(kit.dir)
+  })
+
+  test('are read from the host’s answer: each that parses, none from a host too old to say', async () => {
+    const token = 'k'.repeat(32)
+    const host = (answer: Record<string, unknown>) => (async () => ({ ok: true, status: 200, json: async () => ({ ok: true, token, doors: [], ...answer }) })) as unknown as typeof fetch
+    const env = { KEHIKOT_ORIGINS: 'http://127.0.0.1:4999' }
+    const asked = { projectPath: '/p', projectId: null, token, kehikko: 'k1a2b3c4' }
+    const now = await hostPlace(asked, { env, fetch: host({ kehikkoSkills: [mine('house-style', 'Short.'), { name: 'bad', description: 'x', text: 'no front matter' }] }) })
+    expect(now?.kehikkoSkills?.map((one) => one.name)).toEqual(['house-style'])
+    expect((await hostPlace(asked, { env, fetch: host({}) }))?.kehikkoSkills).toBeNull()
   })
 })

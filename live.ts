@@ -2395,6 +2395,7 @@ export class Runs {
     let doors: SessionDoor[] = []
     let present: string[] = []
     let everywhere: HostPlace['everywhere'] = null
+    let kehikkoSkills: HostPlace['kehikkoSkills'] = null
     if (able.configures) {
       token = (settled ? tokenFor(projectPath, settled, freshToken) : null) ?? freshToken()
       this.issue(token, { projectPath, projectId, place: asked.place })
@@ -2406,13 +2407,16 @@ export class Runs {
       const got = said?.doors ?? (await (this.options.doors ?? hostDoors)(door).catch(() => null))
       if (said?.modules) present = said.modules.map((one) => one.module)
       everywhere = said?.everywhere ?? null
+      /* The skills the person wrote for this kehikko (protocol 2.53.0), from the same answer; a test's
+         stand-in `doors` asks its `place`, when it has one, for them. */
+      kehikkoSkills = said ? (said.kehikkoSkills ?? null) : this.options.place ? ((await this.options.place(door).catch(() => null))?.kehikkoSkills ?? null) : null
       if (got?.length) doors = got
       else this.log('vibe: no host gave this session its doors; it starts with the agent’s own configuration')
     }
-    /* Its folder, given with `--add-dir`: the skills of every module on the kehikko, its hooks, its
+    /* Its folder, given with `--add-dir`: the skills the person wrote for the kehikko and those of every module on it, its hooks, its
        context hook and its notes, for this one process, removed with it (skills.ts). Only for a copy
        that takes `--add-dir`. */
-    const kit = able.plugins ? await sessionKit(doors, { base: this.options.configBase, fetch: this.options.fetch, log: this.log, token, present, everywhere, projectPath }).catch((error: unknown) => {
+    const kit = able.plugins ? await sessionKit(doors, { base: this.options.configBase, fetch: this.options.fetch, log: this.log, token, present, everywhere, kehikkoSkills, projectPath }).catch((error: unknown) => {
       this.log(`vibe: the session's folder could not be written — ${error instanceof Error ? error.message : String(error)}`)
       return null
     }) : null

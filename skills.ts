@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { WELL_KNOWN, missingNeeds, moduleSkillsSchema, needSaid, skillPath, skillTextIssue, type EverywhereSkill, type ModuleSkill, type ProvidingManifest } from 'kehikot-module-protocol'
+import { WELL_KNOWN, missingNeeds, moduleSkillsSchema, needSaid, skillPath, skillTextIssue, type EverywhereSkill, type KehikkoSkill, type ModuleSkill, type ProvidingManifest } from 'kehikot-module-protocol'
 import { originFor, preferred, registryDir } from 'kehikot-module-protocol/serve'
 
 import { configDirOf, type SessionDoor } from './doorConfig.ts'
@@ -41,6 +41,12 @@ import { PLACE_TOKEN } from './record.ts'
  * `needs`) only when every need is met by a module on the kehikko — judged on their manifests
  * (protocol 2.21.0). A name a skill of the person's already has (in `~/.vibe/skills`,
  * `~/.agents/skills` or the project's `.vibe/skills` or `.agents/skills`) is not given.
+ *
+ * And first of all, the skills the person wrote for the session's kehikko (protocol 2.53.0), as the
+ * host hands them: each written as it comes, so a name the person chose for the kehikko is theirs
+ * over any module's. The session's notes list them under their own heading (the protocol's
+ * `sessionNotes`), not among the `/name` entries here; one added after the session started, or one
+ * a skill of the person's own by the same name hides, is said there with the host's tool to read it.
  *
  * ## Written for Claude Code, given to Vibe
  *
@@ -212,6 +218,11 @@ export interface GatherOptions {
   present?: readonly string[]
   /** The skills the host keeps for every conversation (`everywhere`, protocol 2.23.0), or null when it did not say. */
   everywhere?: readonly EverywhereSkill[] | null
+  /**
+   * The skills the person wrote for the session's kehikko (protocol 2.53.0), as the host handed them:
+   * each written as it is, before any module's, so a name the person chose is theirs.
+   */
+  kehikkoSkills?: readonly KehikkoSkill[] | null
 }
 
 /** One skill of a session, as its context lists it. */
@@ -225,6 +236,8 @@ export interface Listed {
   by: string
   /** `callable`: in the session's folder; `taken`: a skill of the person's own has the name, so Kehikot's was not given. */
   state: 'callable' | 'taken'
+  /** True for a skill the person wrote for the kehikko (protocol 2.53.0): the notes list those, not `skillsText`. */
+  kehikko?: boolean
 }
 
 export interface Kit {
@@ -263,7 +276,11 @@ interface Gathered {
   skill: VibeSkill
   module: string
   by: string
+  kehikko?: boolean
 }
+
+/** Who a skill the person wrote for the kehikko is by, as the folder's list keeps it. */
+export const KEHIKKO_SKILL_BY = 'this kehikko'
 
 /**
  * The folder a session started here is given, with its skills in it.
@@ -286,12 +303,17 @@ export async function sessionKit(doors: readonly SessionDoor[], options: GatherO
   const take = (name: string, one: Omit<Gathered, 'skill'> & { text: string }) => {
     const had = found.get(name)
     if (had) {
-      if (had.module !== one.module) log(`vibe: skill ${name} from ${one.module} left out — another module already offers one by that name`)
+      if (had.module !== one.module) log(`vibe: skill ${name} from ${one.module} left out — ${had.kehikko ? 'this kehikko has a skill' : 'another module already offers one'} by that name`)
       return
     }
     /* This module's own skills are a person's to run, every one. */
     const skill = forVibe(one.text, name, one.module === ID)
     found.set(name, { skill, module: one.module, by: one.by })
+  }
+  /* The person's own skills for this kehikko first (protocol 2.53.0), written as the host gave them. */
+  for (const one of options.kehikkoSkills ?? []) {
+    if (found.has(one.name) || skillTextIssue(one.text, one.name)) continue
+    found.set(one.name, { skill: { name: one.name, description: one.description, implicit: true, text: one.text }, module: 'kehikko', by: KEHIKKO_SKILL_BY, kehikko: true })
   }
   for (const one of skillDeclarations()) take(one.name, { text: skillText(one.name)!, module: ID, by: 'Vibe' })
 
@@ -396,7 +418,7 @@ export async function sessionKit(doors: readonly SessionDoor[], options: GatherO
       mkdirSync(folder, { recursive: true, mode: 0o700 })
       writeFileSync(join(folder, 'SKILL.md'), one.skill.text, { mode: 0o600 })
     }
-    skills.push({ name, description: one.skill.description, implicit: one.skill.implicit, module: one.module, by: one.by, state: taken ? 'taken' : 'callable' })
+    skills.push({ name, description: one.skill.description, implicit: one.skill.implicit, module: one.module, by: one.by, state: taken ? 'taken' : 'callable', ...(one.kehikko ? { kehikko: true } : {}) })
   }
 
   mkdirSync(join(dir, 'kehikot'), { mode: 0o700 })
@@ -425,12 +447,21 @@ export function kitSkills(dir: string | null): Listed[] {
             module: typeof it.module === 'string' ? it.module : '',
             by: typeof it.by === 'string' ? it.by.slice(0, 80) : '',
             state: typeof it.state === 'string' && STATES.has(it.state) ? (it.state as Listed['state']) : 'callable',
+            ...(it.kehikko === true ? { kehikko: true } : {}),
           }]
         : []
     })
   } catch {
     return []
   }
+}
+
+/**
+ * The skills a session has loaded, by name (the protocol's `holds`): those its folder holds. A
+ * name a skill of the person's own took is not counted: the session has theirs, not Kehikot's.
+ */
+export function heldSkills(skills: readonly Listed[]): string[] {
+  return skills.filter((one) => one.state === 'callable').map((one) => one.name)
 }
 
 const oneLine = (text: string): string => text.replace(/[\s\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').trim()
@@ -440,7 +471,9 @@ const oneLine = (text: string): string => text.replace(/[\s\u0000-\u001f\u007f\u
  * picks from Vibe's slash menu, where Vibe itself lists them too. Then what was not given and why.
  * Null when there are none.
  */
-export function skillsText(skills: readonly Listed[]): string | null {
+export function skillsText(all: readonly Listed[]): string | null {
+  /* The kehikko's own skills are the notes' to say (`sessionNotes`), under their own heading. */
+  const skills = all.filter((one) => !one.kehikko)
   if (!skills.length) return null
   const by = (one: Listed) => (one.by ? ` (${oneLine(one.by)})` : '')
   const callable = skills.filter((one) => one.state !== 'taken')

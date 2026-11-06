@@ -49,6 +49,14 @@ framing it: a session belongs to a project, and only a host says which.
   conversation, translated from Claude Code's format and written into the session's own
   `.vibe/skills/`: in that conversation's `/` menu and nowhere else. A skill of the person's by the
   same name wins, and the session is told so.
+- **The kehikko's own skills** (protocol 2.53.0). The skills the person wrote for a kehikko come
+  with the host's answer to `POST /host/place` at a session's start and are written, as they come,
+  into the same per-session `.vibe/skills/` (0700/0600, removed with the session), ahead of any
+  module's skill by the same name. The notes list them under their own heading and pass the skills
+  the session holds (`holds`), so one added after the start — or hidden by a skill of the person's
+  own by its name — is said as not loaded, to be read with the host's `kehikko_skills` tool; one
+  changed or removed is told after the next tool call. A module's skill the session was not given
+  is likewise said as not loaded. Nothing goes in `~/.vibe`, `~/.agents` or the project.
 - **Working, needs you, finished**, from Vibe's own program status reports (OSC 7501), in the Inbox
   (`activity.set`) and the View menu; a notice when a session nobody is looking at needs its person
   or finishes. "Needs you" is an approval or a question Vibe put up in a conversation that has had a

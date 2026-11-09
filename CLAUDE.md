@@ -37,7 +37,7 @@ and cannot do here.
 
 ```
 bun run typecheck
-bun test            # the whole suite: through the Test runs queue on a shared machine
+bun test            # the whole suite: through the Queue on a shared machine
 bun run check:door
 bun run build
 ```

@@ -92,15 +92,15 @@ export const MANIFEST: Manifest = manifestSchema.parse({
     as: 'kehikko-vibe',
     about:
       'Which Vibe sessions a person keeps for which place, and whether one is working, waiting or finished;'
-      + ' tell_finished says a finished turn was research. Starts and types nothing.',
+      + ' tell_finished says how a turn ends: done, a decision, or research.',
   },
   extensions: { emits: [NOTICES], consumes: [] },
   reacts: ['parts'],
   /* Another module may ask for one of a place's conversations to be shown (`view.goto { show }`,
      protocol 2.28.0): Queue, going to the session that queued a run. See `showStep`. */
   shows: ['agent-session'],
-  /* "Research complete" (protocol 2.31.0): a finished turn or subagent that was research names it,
-     and the host may give it a sound of its own. A case of `done`; an older host ignores it. See research.ts. */
+  /* The protocol's turn events (2.55.0, `TURN_EVENTS`): "Research complete" (2.31.0, a case of `done`),
+     and the `attention` ones a turn's end can be. An older host ignores them. See events.ts and research.ts. */
   events: EVENTS,
   /* Its sessions run in its own process, so a restart of it ends them (protocol 2.33.0): a host does
      not restart it on its own account — an automatic update waits for them to end. */

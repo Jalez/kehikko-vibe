@@ -10,7 +10,7 @@ import { PROJECT_ID, projectFile, readProjectFile } from 'kehikot-module-protoco
 import type { RunSockets } from 'kehikot-module-protocol/run'
 import { messageDelivery, mintTicket, pasted, sameTicket, type DeliverySession } from 'kehikot-module-protocol/serve'
 import type { DeliveryState } from 'kehikot-module-protocol'
-import { RESEARCH_COMPLETE_EVENT, STALLED_EVENT, TURN_EVENTS, TURN_KINDS, toldReply, turnEnd, turnQuestion, type ActivityQuestion, type TurnEnd, type TurnKind } from 'kehikot-module-protocol'
+import { RESEARCH_COMPLETE_EVENT, STALLED_EVENT, TURN_EVENTS, TURN_KINDS, TURN_REMINDER, toldReply, turnEnd, turnQuestion, turnReminder, type ActivityQuestion, type TurnEnd, type TurnKind, type TurnReminder } from 'kehikot-module-protocol'
 
 import { emptyPrompt, promptAfter, typedByPerson, type Prompt } from './input.ts'
 import { Gauges } from './gauges.ts'
@@ -286,6 +286,9 @@ const METER_EVERY = 2_500
 export const COMMANDS = { compact: '/compact', clear: '/clear' } as const
 export type Command = keyof typeof COMMANDS
 /** How long after a command's text its Enter is typed: a slash-command menu settles on what was typed first. */
+/** How often sessions are looked at for the reminder after a stall (`remindStalls`), in ms. */
+const REMIND_EVERY = 5_000
+
 const ENTER_AFTER = 250
 /** How recently a conversation was used for a message to resume it when it is asleep: older unread messages are never unread (`MESSAGES_UNREAD_MS`). */
 const ASLEEP_FOR = 24 * 60 * 60_000
@@ -588,6 +591,11 @@ export interface Run {
    * Its finished item is this, until the next turn begins. Null before a turn ended here.
    */
   turnEnd: TurnEnd | null
+  /**
+   * What the reminder after a stall needs (protocol 2.56.0, `turnReminder`): when its turn ended and
+   * how, what the person typed or sent since, and whether it was already reminded (`remindStalls`).
+   */
+  reminder: TurnReminder
   /** Its subagents running now, by agent id, with when each started (`SubagentStart`). */
   agents: Map<string, number>
   /** Its subagents that finished research, each an Inbox item of its own until the person opens the session. */
@@ -1918,12 +1926,44 @@ export class Runs {
     const now = this.now()
     run.prompt = { chars: 0, sentAt: now + ENTER_AFTER }
     run.stirredAt = now
+    run.reminder.typed(now)
     run.pty.write(pasted(text))
     setTimeout(() => {
       if (!run.ended) run.pty.write('\r')
     }, ENTER_AFTER).unref?.()
     this.log(`vibe: a message came for ${run.settled ?? run.id}, ${state === 'idle' ? 'idle at its prompt' : 'working'}; typed into it`)
     return true
+  }
+
+  /**
+   * The reminder after a stall (protocol 2.56.0): for each session this process started and holds
+   * the terminal of, when `shouldRemind` says so — the person's "Remind the agent to say how its turn
+   * ended" and "Messages wake an idle session" on, its turn ended undeclared a while ago, idle at its
+   * prompt, nothing typed or sent by the person since, at most once a turn and never twice without
+   * their prompt between — type `TURN_REMINDER` at its prompt, one bracketed paste and Enter, the way
+   * a message is. Called on a clock (`REMIND_EVERY`). Returns how many were reminded.
+   */
+  remindStalls(): number {
+    let reminded = 0
+    for (const run of this.runs.values()) {
+      if (run.what !== 'session' || run.ended || run.rested) continue
+      const settings = readSettings(run.projectPath)
+      const state = this.standing(run).state
+      const own = run.token !== null && (run.joined === null || run.owned)
+      const decided = run.reminder.decide(this.now(), { on: settings.remindTurnEnd, wake: settings.wakeOnMessages, own, state })
+      if (!decided.remind) continue
+      const now = this.now()
+      run.prompt = { chars: 0, sentAt: now + ENTER_AFTER }
+      run.stirredAt = now
+      run.reminder.reminded(now)
+      run.pty.write(pasted(TURN_REMINDER))
+      setTimeout(() => {
+        if (!run.ended) run.pty.write('\r')
+      }, ENTER_AFTER).unref?.()
+      this.log(`vibe: ${run.settled ?? run.id} stopped without saying how its turn ended; reminded once — ${decided.why}`)
+      reminded += 1
+    }
+    return reminded
   }
 
   /**
@@ -2534,6 +2574,7 @@ export class Runs {
       state: null,
       told: null,
       turnEnd: null,
+      reminder: turnReminder(),
       agents: new Map(),
       found: [],
       stateSince: this.now(),
@@ -2889,6 +2930,7 @@ export class Runs {
       const told = run.told && (TURN_KINDS as readonly string[]).includes(run.told.event) ? { kind: run.told.event as TurnKind, label: run.told.label, ...(run.told.choices ? { choices: run.told.choices } : {}) } : null
       run.turnEnd = turnEnd({ told, waking: null, folder: run.cwd || run.projectPath })
       run.told = null
+      run.reminder.ended(this.now(), run.turnEnd.event === STALLED_EVENT)
       this.changed()
     }
     /* Which conversation the hook was in: a new one's id, which Vibe chose (`learnSession`), or
@@ -2919,6 +2961,7 @@ export class Runs {
     if (report.state === 'working' && run.state !== 'working' && run.state !== 'needs-you') {
       /* A new turn: what the last one was about to be tagged with is over. */
       run.told = null
+      run.reminder.prompt(this.now())
       if (run.turnEnd) {
         run.turnEnd = null
         this.changed()
@@ -3214,6 +3257,7 @@ export class Runs {
     if (typedByPerson(data)) {
       run.touched = true
       run.stirredAt = this.now()
+      run.reminder.person(run.stirredAt)
       run.attendedAt = run.stirredAt
       run.typedAt = run.stirredAt
       /* What is at its prompt now, counted: what Compact and Clear wait on (see `readiness`). */
@@ -3292,6 +3336,7 @@ export class Runs {
       state: null,
       told: null,
       turnEnd: null,
+      reminder: turnReminder(),
       agents: new Map(),
       found: [],
       stateSince: this.now(),
@@ -3408,6 +3453,9 @@ export function theRuns(log: (line: string) => void = () => {}): Runs {
   /* A message to a session idle at its prompt wakes it (protocol 2.43.0): the protocol's rule, typed through `wake`. */
   /* Vibe takes a line typed during a turn (protocol 2.48.0, docs/agent-messages.md): a working session is typed into at once. */
   messageDelivery({ module: 'kehikot.vibe', queues: true, sessions: () => runs.deliverySessions(), type: (key, text) => runs.deliver(key, text), resume: (key, text) => runs.resumeFor(key, text), log }).start()
+  /* A turn that ended without saying how is reminded once, typed in when idle (protocol 2.56.0). */
+  const reminding = setInterval(() => runs.remindStalls(), REMIND_EVERY)
+  ;(reminding as { unref?: () => void }).unref?.()
   /* The folders of sessions a process that stopped without ending them left behind: removed now (skills.ts). */
   try {
     const swept = sweepKits()

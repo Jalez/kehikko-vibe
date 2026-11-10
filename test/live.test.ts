@@ -2039,6 +2039,9 @@ describe('a conversation’s place, on every Kehikot door (protocol 2.4.0)', () 
     expect(readFileSync(join(kit, '.vibe', 'skills', 'kehikot-here', 'SKILL.md'), 'utf8')).toBe(forVibe(skillText('kehikot-here')!, 'kehikot-here', true).text)
     /* Its context hook runs from its own folder after each tool, beside the state hooks. */
     expect(readFileSync(join(kit, '.vibe', 'hooks.toml'), 'utf8')).toContain(JSON.stringify(`/bin/sh '${join(kit, 'context.sh')}' PostToolUse`))
+    /* And its pre-tool hook, before its shell commands and its subagents' starts (protocol 2.61.0). */
+    expect(readFileSync(join(kit, '.vibe', 'hooks.toml'), 'utf8')).toContain(JSON.stringify(`/bin/sh '${join(kit, 'guard.sh')}' PreToolUse`))
+    expect(readFileSync(join(kit, 'guard.sh'), 'utf8')).toBe(readFileSync(join(import.meta.dir, '..', 'guard.sh'), 'utf8'))
     /* What it is told at its start, where Vibe reads an added folder's instructions. */
     const notes = readFileSync(join(kit, 'AGENTS.md'), 'utf8')
     expect(notes.startsWith(NOTES_HEAD)).toBe(true)
@@ -2162,6 +2165,32 @@ describe('a session started here knows its place and its kehikko’s modules, an
     await settle()
     const read = readPlaces(dir)
     expect(read.ok && read.value.places[placeKey(KEYED)]?.own).toBe(B)
+  })
+
+  test('its shell commands are held to the guards of the modules placed on its kehikko, kept from each ask (protocol 2.61.0)', async () => {
+    const dir = project()
+    const QUEUE = { module: 'kehikot.queue', name: 'Queue', guard: { id: 'heavy', tool: 'shell' as const, match: { commands: ['bun test'] }, action: 'rewrite' as const, rewrite: 'kehikot-queue run -- sh -c {command}', why: 'Heavy runs wait their turn.' } }
+    const h = host([NOTES])
+    let guards = [QUEUE]
+    const asked: DoorsAsked[] = []
+    const place = async (one: DoorsAsked) => {
+      asked.push(one)
+      const said = await h.place(one)
+      return said ? { ...said, guards } : null
+    }
+    const w = world({ fetch, configures: true, plugins: true, doors: h.doors, place, configBase: project() })
+    const run = (await w.runs.open(ask(dir, null, KEYED), new Watcher())) as Run
+    const input = (command: string) => ({ session_id: B, parent_session_id: null, hook_event_name: 'pre_tool', tool_name: 'file_system.bash', tool_input: { command } })
+    const before = asked.length
+    expect(await w.runs.guard(B, run.token!, input('bun test'), false)).toMatchObject({ hook_specific_output: { tool_input: { command: "kehikot-queue run -- sh -c 'bun test'" } } })
+    /* Kept from the start's ask: the host is not asked again for a command. */
+    expect(asked.length).toBe(before)
+    expect(await w.runs.guard(B, run.token!, input('git status'), false)).toBeNull()
+    expect(await w.runs.guard(B, run.token!, input('bun test'), true)).toBeNull()
+    /* The Queue taken off: the next tool call's notes ask the host, which hands no guard. */
+    guards = []
+    await w.runs.context('PostToolUse', B, run.token!)
+    expect(await w.runs.guard(B, run.token!, input('bun test'), false)).toBeNull()
   })
 
   test('its folder holds the context script and its token, 0600, and the token is on no command line but the doors’', async () => {

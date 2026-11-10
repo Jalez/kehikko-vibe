@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
-import { researchLine, sessionNotes, type NotesPlace, type NotesTold } from 'kehikot-module-protocol'
+import { guardDecision, guardSays, researchLine, sessionNotes, subagentNotes, type NotesPlace, type NotesTold, type PlacedGuard } from 'kehikot-module-protocol'
 
 import type { DoorsAsked, HostPlace } from './doorConfig.ts'
 import { ID } from './manifest.ts'
@@ -76,6 +76,8 @@ export interface ContextNeeds {
   kitOf?(token: string): string | null
   /** Run something a moment later: the filing is tried again while Vibe writes its record. Absent: not again. */
   later?(run: () => void, ms: number): void
+  /** Keep the guards the host handed for a token's session (protocol 2.61.0), for its pre-tool hook (`guard`). Absent: not kept. */
+  keepGuards?(token: string, guards: PlacedGuard[]): void
 }
 
 export type ContextEvent = 'SessionStart' | 'PostToolUse'
@@ -235,17 +237,24 @@ async function fileSoon(projectPath: string, place: NamedPlace, session: string,
   needs.later(() => void fileSoon(projectPath, place, session, token, needs, left - 1).catch(() => {}), FILE_EVERY)
 }
 
-/** Where a conversation belongs now, and what the host says of that place: what both kinds of notes are made of. */
-async function placed(projectPath: string, started: Started, session: string | null, token: string, needs: ContextNeeds, messages = true): Promise<{ input: Parameters<typeof sessionNotes>[0] } > {
-  /* Where it belongs now: the record's say, else where it was started (it is filed there once it is a conversation). */
+/** Where a conversation belongs now: the record's say, else where it was started (it is filed there once it is a conversation). Null place: nowhere. */
+function whereNow(projectPath: string, started: Started, session: string | null): { place: NamedPlace | null; kehikko: string | null } {
   const read = readPlaces(projectPath)
   const places = read.ok ? read.value : null
   const home = places && session ? homeOf(places, session) : null
   const entry = places && session && Object.hasOwn(places.sessions, session) ? places.sessions[session] : undefined
   const place = home && places ? named(home, places, started.place) : entry?.detached || entry?.ignored ? null : started.place
-  const key = place ? placeKey(place) : null
   const kehikko = place?.kehikko && 'key' in place.kehikko ? place.kehikko.key : null
+  return { place, kehikko }
+}
+
+/** Where a conversation belongs now, and what the host says of that place: what both kinds of notes are made of. */
+async function placed(projectPath: string, started: Started, session: string | null, token: string, needs: ContextNeeds, messages = true): Promise<{ input: Parameters<typeof sessionNotes>[0] } > {
+  const { place, kehikko } = whereNow(projectPath, started, session)
+  const key = place ? placeKey(place) : null
   const answer = place ? await needs.host({ projectPath, projectId: started.projectId, token, kehikko, messages }).catch(() => null) : null
+  /* The guards of the modules placed there (protocol 2.61.0), for the pre-tool hook: kept fresh at every ask. */
+  if (answer) needs.keepGuards?.(token, answer.guards ?? [])
   const hostDoor = answer?.doors.find((door) => door.module === 'kehikko')?.name ?? null
   /* What the session has loaded: the skills its folder holds, written once at its start (skills.ts). */
   const kit = needs.kitOf?.(token) ?? null
@@ -336,4 +345,136 @@ export async function context(asked: { event: string; session: string; token: st
   const whole = sessionNotes({ ...input, messages: null, messagesMore: 0 }, 'start', null).text
   if (whole !== null) writeNotes(needs.kitOf?.(token) ?? null, withSkills(whole, token, needs))
   return { hook_specific_output: { additional_context: text } }
+}
+
+/* ------------------------------------------------------------------------ *
+ * Guards and subagents (protocol 2.61.0)
+ * ------------------------------------------------------------------------ */
+
+/**
+ * The tools the pre-tool hook is given for (`GUARD_MATCH`, Vibe's qualified names, docs "Hooks",
+ * `pre_tool`): the shell tool, a command started in the background (which `bash` does not catch), and
+ * a subagent's start. Subagents inherit the session's hooks, so their commands are held too.
+ */
+export const GUARD_TOOLS = { shell: 'file_system.bash', background: 'process.start', spawn: 'agents.spawn' } as const
+
+/** The `match` of the pre-tool hook: exactly those three tools, by qualified name. */
+export const GUARD_MATCH = 're:file_system\\.bash|process\\.start|agents\\.spawn'
+
+/** How long the guards kept for a session are used before the host is asked again. */
+export const GUARDS_FRESH_MS = 30_000
+
+/**
+ * What a Vibe `pre_tool` hook prints (docs "Hooks", `pre_tool`; harness `_foreign_hooks.py`
+ * `_interpret_stdout`): `hook_specific_output.tool_input`, the FULL replacement of the tool's
+ * arguments — what the approval prompt shows, what runs and what the model sees on its own call —
+ * with `system_message` shown to the person; or `decision: deny` with `reason`, which becomes the
+ * tool error the model reads.
+ */
+export type GuardAnswer =
+  | { hook_specific_output: { tool_input: Record<string, unknown> }; system_message: string }
+  | { decision: 'deny'; reason: string }
+
+/** What the person is shown when a subagent's brief was given the notes. */
+export const SPAWN_SAID = 'Kehikot told the subagent where it is and what the modules on this kehikko hold commands to.'
+
+const toolOf = (input: unknown): { name: string; args: Record<string, unknown> } | null => {
+  const said = input && typeof input === 'object' ? (input as { tool_name?: unknown; tool_input?: unknown }) : null
+  if (!said || typeof said.tool_name !== 'string' || !said.tool_input || typeof said.tool_input !== 'object' || Array.isArray(said.tool_input)) return null
+  return { name: said.tool_name, args: said.tool_input as Record<string, unknown> }
+}
+
+/**
+ * THE ANSWER to one shell command, from Vibe's `pre_tool` input and the session's guards: pure. A
+ * rewrite gives the WHOLE input back with only `command` changed, and nothing about permission, so
+ * the person's approval rules judge the command that will run. A deny refuses with the module's words
+ * (`guardSays`). Null: run it as written — another tool, no command, no guard, or `direct`
+ * (KEHIKOT_DIRECT in the session's environment, or in a background command's own `env`).
+ */
+export function guardAnswer(input: unknown, guards: readonly PlacedGuard[], direct = false): GuardAnswer | null {
+  const tool = toolOf(input)
+  if (!tool || (tool.name !== GUARD_TOOLS.shell && tool.name !== GUARD_TOOLS.background)) return null
+  if (typeof tool.args.command !== 'string') return null
+  const env: Record<string, string> = {}
+  const own = tool.args.env
+  if (tool.name === GUARD_TOOLS.background && own && typeof own === 'object' && !Array.isArray(own)) {
+    for (const [name, value] of Object.entries(own)) if (typeof value === 'string') env[name] = value
+  }
+  if (direct) env.KEHIKOT_DIRECT = '1'
+  const decision = guardDecision(guards, tool.args.command, { tool: 'shell', env })
+  if (decision.action === 'pass') return null
+  if (decision.action === 'deny') return { decision: 'deny', reason: guardSays(decision) }
+  return { hook_specific_output: { tool_input: { ...tool.args, command: decision.command } }, system_message: guardSays(decision) }
+}
+
+/**
+ * A subagent's brief with what a subagent is told (the protocol's `subagentNotes`) after it, as a
+ * rewrite of `agents.spawn`: Vibe has no hook at a subagent's start, but its `pre_tool` hook may
+ * replace the spawn's `message`, the child's whole task. The brief stays first, so the child's first
+ * line (what research.ts reads) is what it was asked. Null: no notes, or not a spawn.
+ */
+export function spawnAnswer(input: unknown, notes: string | null): GuardAnswer | null {
+  const tool = toolOf(input)
+  if (!tool || tool.name !== GUARD_TOOLS.spawn || typeof tool.args.message !== 'string' || !tool.args.message.trim() || !notes) return null
+  return { hook_specific_output: { tool_input: { ...tool.args, message: `${tool.args.message}\n\n${notes}` } }, system_message: SPAWN_SAID }
+}
+
+export interface GuardNeeds extends Pick<ContextNeeds, 'program' | 'startedOf' | 'host' | 'kitOf'> {
+  /** The guards kept for a token's session, and when; null when none are kept. */
+  keptGuards(token: string): { at: number; guards: PlacedGuard[] } | null
+  keepGuards(token: string, guards: PlacedGuard[]): void
+  now?(): number
+}
+
+/**
+ * The session's pre-tool hook (`guard.sh` → `POST /api/guard`): what becomes of one shell command, the
+ * session's own or a subagent's, under the guards of the modules placed on its kehikko — or, for a
+ * subagent's start, its brief with the notes after it. `session` is the conversation the place is read
+ * for (guard.sh sends a subagent's parent). The guards kept from the last ask of the host are used
+ * while fresh (`GUARDS_FRESH_MS`), else the host is asked again, without messages. Any doubt — no
+ * place, no host, a token this module did not give out — is null: the tool runs as asked.
+ */
+export async function guard(asked: { session: string; token: string | null; input: unknown; direct?: boolean }, needs: GuardNeeds): Promise<GuardAnswer | null> {
+  const { session, token } = asked
+  if (!needs.program.isId(session) || !token || !PLACE_TOKEN.test(token)) return null
+  const tool = toolOf(asked.input)
+  if (!tool || !Object.values(GUARD_TOOLS).includes(tool.name as never)) return null
+  const started = needs.startedOf(token)
+  const root = started ? projectRoot(started.projectPath) : null
+  const where = started && root?.ok ? { projectPath: root.value, ...whereNow(root.value, started, session) } : null
+  const ask = () => (started && where?.place ? needs.host({ projectPath: where.projectPath, projectId: started.projectId, token, kehikko: where.kehikko, messages: false }).catch(() => null) : Promise.resolve(null))
+  const now = needs.now?.() ?? Date.now()
+  const kept = needs.keptGuards(token)
+
+  if (tool.name === GUARD_TOOLS.spawn) {
+    if (!where?.place) return null
+    const answer = await ask()
+    if (answer) needs.keepGuards(token, answer.guards ?? [])
+    const guards = answer ? (answer.guards ?? null) : (kept?.guards ?? null)
+    const unread = Boolean(where.place.kehikko && !where.kehikko)
+    const kit = needs.kitOf?.(token) ?? null
+    const notes = subagentNotes(
+      {
+        place: notesPlace(where.projectPath, where.place),
+        modules: unread ? null : (answer?.modules ?? null),
+        absent: answer?.absent ?? null,
+        hostDoor: answer?.doors.find((door) => door.module === 'kehikko')?.name ?? null,
+        self: SELF,
+        holds: kit ? heldSkills(kitSkills(kit)) : null,
+        kehikkoSkills: unread ? null : (answer?.kehikkoSkills ?? null),
+        ...(kit ? {} : { loadsKehikkoSkills: false }),
+      },
+      guards,
+    )
+    return spawnAnswer(asked.input, notes)
+  }
+
+  let guards = kept && now - kept.at < GUARDS_FRESH_MS ? kept.guards : null
+  if (guards === null) {
+    const answer = await ask()
+    /* No answer: the last guards heard stand, for a conversation that still belongs somewhere. */
+    guards = answer ? (answer.guards ?? []) : where?.place ? (kept?.guards ?? []) : []
+    needs.keepGuards(token, guards)
+  }
+  return guardAnswer(asked.input, guards, Boolean(asked.direct))
 }

@@ -41,6 +41,16 @@ framing it: a session belongs to a project, and only a host says which.
   (a module put on or taken off, the conversation moved) is told after its next tool call, through
   Vibe's `post_tool` hook (`additional_context`). *What this conversation was told* in the View menu
   shows it as plain text.
+- **The modules on its kehikko hold its commands to their rules** (guards, protocol 2.61.0). Vibe's
+  `pre_tool` hook (`guard.sh`, on `file_system.bash`, `process.start` and `agents.spawn`) asks this
+  module about each shell command, the session's and its subagents' (they inherit its hooks): one a
+  placed module guards is run through that module's command (`hook_specific_output.tool_input`, which
+  Vibe re-validates and shows in its approval prompt) or refused with its reason (`decision: deny`,
+  the tool error the model reads). `KEHIKOT_DIRECT=1` in front of a command passes. Vibe has no hook at
+  a subagent's start, so a subagent's brief is given the protocol's `subagentNotes` after it, by the
+  same hook rewriting `agents.spawn`'s `message`. The guards are asked of the host with each tool's
+  notes and kept 30 seconds; no answer, a host too old to say, or anything going wrong lets the
+  command run as written.
 - **The kehikko's MCP doors** — the host's and each module's, each carrying the conversation's place
   token — are given to that one process in `VIBE_MCP_SERVERS`, which Vibe merges with the person's own
   servers by name.
@@ -125,7 +135,7 @@ framing it: a session belongs to a project, and only a host says which.
 | Context at start and changes at the next prompt (`sessionNotes`) | **adapted** | start: the kit's `AGENTS.md` (a new session, or one `/clear` makes); changes: after the next tool call (`post_tool`), not the next prompt. A resumed conversation keeps the instructions it was made with and hears changes after its next tool call |
 | What this conversation was told | **done** | |
 | Working / needs you / finished, notices, Inbox | **done, better** | from Vibe's own OSC 7501 reports, which name an approval and a question apart; no hooks needed for state |
-| Research complete (`events`, sound "answer") | **adapted** | `tell_finished` tags the turn (ended by `post_agent`); subagents by `explore` or a research-like task. Vibe has no subagent-start hook, so a tag never goes to a subagent |
+| Research complete (`events`, sound "answer") | **adapted** | `tell_finished` tags the turn (ended by `post_agent`); subagents by `explore` or a research-like task. Vibe has no subagent-start hook; a subagent hears how to tag research from its brief's notes (`agents.spawn`, above) |
 | How a turn ended (`turnEnd`, protocol 2.55.0): done, needs your decision, stopped without finishing | **adapted** | `tell_finished` declares it; the rule is applied at `post_agent`. A decision carries its question to the Inbox, and the answer is typed in as the person's; the next turn withdraws it. A stall the person watched is the plain finished item. Not ported: "Action refused" (Vibe has no hook at an approval or a refusal), pauses (its hooks report no background tasks or scheduled wake-ups, so `waking` is null), "Send a stalled turn back once" (`post_agent` can make the agent retry, but nothing measured here says how, or that a retried turn is marked as one) |
 | The reminder after a stall (protocol 2.56.0, `shouldRemind`) | **adapted** | In place of sending it back: the protocol's one fixed line typed at the idle prompt 20 s after an undeclared end (`remindStalls`), once a turn, never twice without the person's prompt between, never after they typed or sent anything, never into a question; behind "Remind the agent to say how its turn ended" (on by default) and "Messages wake an idle session" |
 | Interrupted-work alert after a restart | **done** | the record's `working` mark; Vibe's journal is not read for turns |
@@ -136,6 +146,8 @@ framing it: a session belongs to a project, and only a host says which.
 | Install helper | **done** | `uv tool install mistral-vibe`, else the vendor's script; no admin rights |
 | Ready-built, run.sh stamp check | **done** | |
 | Icon | **adapted** | `lucide:zap`: the protocol has no Mistral mark yet |
+| Guards (protocol 2.61.0): a placed module's rule on shell commands, held for the session and its subagents | **done** | `pre_tool` can replace a tool's arguments, so a guarded command is rewritten, not only refused; also commands started in the background (`process.start`) |
+| A subagent told its place and the guards (`subagentNotes`) | **adapted** | no subagent-start hook: the notes are appended to the subagent's brief by rewriting `agents.spawn` in the same `pre_tool` hook |
 | Sessions started outside Kehikot reported | **not done** | would need a hook in `~/.vibe/hooks.toml` |
 | A session name at start | **not possible** | Vibe takes none (`/rename` is typed in the session) |
 | `${CLAUDE_SESSION_ID}` in modules' skills | **not possible** | Vibe sets no such variable; the skill text says it is unknown |

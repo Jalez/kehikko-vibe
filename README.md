@@ -23,12 +23,14 @@ framing it: a session belongs to a project, and only a host says which.
 
 - **A session per place.** A place is project + epic + the picked parts + kehikko. Opening the
   module there shows Vibe's own UI in a terminal: the place's conversation, resumed by id
-  (`vibe --resume <id>`), or a new one. The View menu lists this kehikko's conversations; Vibe's own
+  (`vibe --resume <id>`), or a new one. The conversation chooser lists this kehikko's conversations; Vibe's own
   `/resume` and `/clear` work in it, and the record follows (the session's hooks name the
   conversation it is on).
-- **Disconnect and connect again**, as in the Codex module: "Connected to this kehikko" in the View
-  menu, "Disconnect from this kehikko" in the Run menu, "Connect a conversation to this kehikko" in
-  the Go menu. Not confirmed (it can be undone), and no agent may press any of them. A disconnected conversation stays off every place until a person connects it again, and `/kehikot-here off` disconnects the conversation it is typed in.
+- **One conversation chooser**, as in the Codex module: the View menu holds one chooser labelled with the
+  conversation on screen ("Conversation: Fix login bug"), with this kehikko's own and the other
+  conversations here under their headings, each with what it is doing in words and when it was last
+  active, then "New conversation" and "Disconnect this conversation". Nothing from another place, and no
+  Go menu. Not confirmed, and no agent may press any of them. A disconnected conversation stays off every place until a person connects it again, and `/kehikot-here off` disconnects the conversation it is typed in.
 - **Filed with no command.** A conversation started here is filed under its place as soon as Vibe
   has a record of it and its hooks name it (its first tool call, or the end of its first turn), and
   is that kehikko's own when the kehikko had none. That holds at any container size: in a box too small for a terminal the session is started behind
@@ -42,7 +44,7 @@ framing it: a session belongs to a project, and only a host says which.
   Claude or Codex conversation on the same kehikko is told. Delivered in the `AGENTS.md` of the
   session's own folder, which Vibe puts into a new session's instructions. After that, what changed
   (a module put on or taken off, the conversation moved) is told after its next tool call, through
-  Vibe's `post_tool` hook (`additional_context`). *What this conversation was told* in the View menu
+  Vibe's `post_tool` hook (`additional_context`). *What this conversation was told* in the Run menu
   shows it as plain text.
 - **The modules on its kehikko hold its commands to their rules** (guards, protocol 2.61.0). Vibe's
   `pre_tool` hook (`guard.sh`, on `file_system.bash`, `process.start` and `agents.spawn`) asks this
@@ -81,7 +83,7 @@ framing it: a session belongs to a project, and only a host says which.
   changed or removed is told after the next tool call. A module's skill the session was not given
   is likewise said as not loaded. Nothing goes in `~/.vibe`, `~/.agents` or the project.
 - **Working, needs you, finished**, from Vibe's own program status reports (OSC 7501), in the Inbox
-  (`activity.set`) and the View menu; a notice when a session nobody is looking at needs its person
+  (`activity.set`) and the conversation chooser; a notice when a session nobody is looking at needs its person
   or finishes. "Needs you" is an approval or a question Vibe put up in a conversation that has had a
   turn, which the person has not had on screen since: never an empty conversation at its prompt; it
   goes when answered, opened or ended.
@@ -102,13 +104,13 @@ framing it: a session belongs to a project, and only a host says which.
   the page draws its own line and rows as before.
   The footer leads with the conversation on screen — what it is doing (**● Working**, **◆ Needs
   you**, *warn*, **○ Finished**), its title and what it is besides this module's own (*background*,
-  *copy*), which the View menu then leaves out of its option — so a container folded to its header
+  *copy*), said in the chooser only as *(running elsewhere)* — so a container folded to its header
   and footer still says what is going on. The strips the page drew above the terminal are the
   footer's too: "No conversation is connected…" with **Copy /kehikot-here** beside it, a run the app
   copies inside the person's click (`copy`, protocol 2.40.0; an app that does not copy keeps the
   page's own bar, where the click is), and "Disconnected …" with **Dismiss**. The header keeps only
-  what sets the module up or starts something: the View menu, Make own, Connected, What this
-  conversation was told, Disconnect, Connect, and the settings toggles.
+  what sets the module up or starts something: the conversation chooser (with New conversation and
+  Disconnect this conversation in it), Make own, What this conversation was told, and the settings toggles.
 - **Settings** (Kehikot › Settings): resume conversations cut off by a restart; the model
   (`VIBE_ACTIVE_MODEL`); when Vibe asks before acting (`--agent ask | accept-edits | smart-approve`,
   or the person's Vibe config). Never `auto-approve`.

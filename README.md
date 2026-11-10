@@ -31,8 +31,11 @@ framing it: a session belongs to a project, and only a host says which.
   the Go menu. Not confirmed (it can be undone), and no agent may press any of them. A disconnected conversation stays off every place until a person connects it again, and `/kehikot-here off` disconnects the conversation it is typed in.
 - **Filed with no command.** A conversation started here is filed under its place as soon as Vibe
   has a record of it and its hooks name it (its first tool call, or the end of its first turn), and
-  is that kehikko's own when the kehikko had none. `/kehikot-here`, typed in a conversation started
-  here, moves it to the kehikko on screen.
+  is that kehikko's own when the kehikko had none. That holds at any container size: in a box too small for a terminal the session is started behind
+  the tile all the same, so the tile shows a real one. Until it is spoken to, the bar above it says
+  so ("A new Vibe conversation: it becomes this kehikko's own…") rather than that nothing is
+  connected; `/kehikot-here` is only for a conversation started elsewhere.
+  Typed in a conversation, `/kehikot-here` moves it to the kehikko on screen.
 - **It knows where it is.** A new conversation is told its place, one line per module on the
   kehikko (name, door, its `agentSays`, its skills), the installed modules absent from it that say
   something there, and the skills it was given — the protocol's `sessionNotes`, word for word what a

@@ -492,6 +492,12 @@ export const CONTEXT_SCRIPT = join(import.meta.dirname, 'context.sh')
 /** The script a session's state hooks run (see `tell.sh`): this module's own copy, which a session reaches by its full path. */
 export const TELL_SCRIPT = join(import.meta.dirname, 'tell.sh')
 
+/** The script a session's pre-tool hook runs, copied into its folder (see `guard.sh`, protocol 2.61.0). */
+export const GUARD_SCRIPT = join(import.meta.dirname, 'guard.sh')
+
+/** Where a session's pre-tool hook is in its folder. */
+export const guardScriptIn = (dir: string): string => join(dir, 'guard.sh')
+
 /** Where a session's context hook is in its folder. */
 export const contextScriptIn = (dir: string): string => join(dir, 'context.sh')
 
@@ -503,6 +509,7 @@ export const hooksFileIn = (dir: string): string => join(dir, '.vibe', 'hooks.to
 
 function writeContextHook(dir: string, token: string, registration: string): void {
   writeFileSync(join(dir, 'context.sh'), readFileSync(CONTEXT_SCRIPT), { mode: 0o700 })
+  writeFileSync(join(dir, 'guard.sh'), readFileSync(GUARD_SCRIPT), { mode: 0o700 })
   writeFileSync(join(dir, 'kehikot', 'token'), token, { mode: 0o600 })
   writeFileSync(join(dir, 'kehikot', 'origin'), served, { mode: 0o600 })
   writeFileSync(join(dir, 'kehikot', 'registration'), registration, { mode: 0o600 })

@@ -9,6 +9,7 @@ import { configDirOf, type SessionDoor } from './doorConfig.ts'
 import { ID, PREFERRED_PORT } from './manifest.ts'
 import { alive, home, vibeHome } from './program.ts'
 import { PLACE_TOKEN } from './record.ts'
+import { stableAddress } from './restarted.ts'
 
 /**
  * The skills a Vibe session started here is given, in Vibe's own format, and the session's folder.
@@ -424,7 +425,7 @@ export async function sessionKit(doors: readonly SessionDoor[], options: GatherO
   mkdirSync(join(dir, 'kehikot'), { mode: 0o700 })
   writeFileSync(join(dir, 'kehikot', 'pid'), String(process.pid), { mode: 0o600 })
   writeFileSync(join(dir, 'kehikot', 'skills.json'), JSON.stringify(skills), { mode: 0o600 })
-  if (options.token && PLACE_TOKEN.test(options.token)) writeContextHook(dir, options.token, options.registration ?? join(registryDir(), `${ID}.json`))
+  if (options.token && PLACE_TOKEN.test(options.token)) writeContextHook(dir, options.token, options.registration ?? join(registryDir(), `${ID}.json`), stableAddress(doors, ID))
   return { dir, skills }
 }
 
@@ -507,13 +508,24 @@ export const notesFileIn = (dir: string): string => join(dir, 'AGENTS.md')
 /** Where a session's hooks are in its folder. */
 export const hooksFileIn = (dir: string): string => join(dir, '.vibe', 'hooks.toml')
 
-function writeContextHook(dir: string, token: string, registration: string): void {
+function writeContextHook(dir: string, token: string, registration: string, stable: string | null): void {
   writeFileSync(join(dir, 'context.sh'), readFileSync(CONTEXT_SCRIPT), { mode: 0o700 })
   writeFileSync(join(dir, 'guard.sh'), readFileSync(GUARD_SCRIPT), { mode: 0o700 })
   writeFileSync(join(dir, 'kehikot', 'token'), token, { mode: 0o600 })
   writeFileSync(join(dir, 'kehikot', 'origin'), served, { mode: 0o600 })
   writeFileSync(join(dir, 'kehikot', 'registration'), registration, { mode: 0o600 })
+  /* Kehikot's stable address for this module (restarted.ts): asked first by the hooks, so a module that came back on another port is found through the host. */
+  if (stable) writeFileSync(join(dir, 'kehikot', 'stable'), stable, { mode: 0o600 })
+  else rmSync(join(dir, 'kehikot', 'stable'), { force: true })
 }
+
+/**
+ * How long Vibe lets `guard.sh` run, in seconds: it waits up to 20 for Kehikot to come back from a
+ * restart before letting a tool through unguarded (see guard.sh), and a non-strict hook that runs out
+ * of time is an allow — the very thing the wait is for. (Vibe's own default is 60; this module's
+ * hooks file caps every timeout at 60.)
+ */
+export const GUARD_TIMEOUT = 30
 
 /** Write a session's `.vibe/hooks.toml` (program.ts `hooksFile`). */
 export function writeHooks(dir: string, text: string): void {

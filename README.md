@@ -52,8 +52,15 @@ framing it: a session belongs to a project, and only a host says which.
   runs in the background and is left as it is). `KEHIKOT_DIRECT=1` in front of a command passes. Vibe has no hook at
   a subagent's start, so a subagent's brief is given the protocol's `subagentNotes` after it, by the
   same hook rewriting `agents.spawn`'s `message`. The guards are asked of the host with each tool's
-  notes and kept 30 seconds; no answer, a host too old to say, or anything going wrong lets the
-  command run as written.
+  notes and kept 30 seconds (and on disk in the session's folder); a host too old to say, or anything
+  going wrong lets the command run as written. Kehikot restarting is not that: while neither Kehikot's
+  stable address for this module, its registration nor its origin answers (or the host has never
+  answered and nothing is kept: `/api/guard` says 503), the hook asks again every second for up to 20
+  seconds (hook timeout 30), then lets the tool run, shows the person it ran unguarded, and the next
+  `post_tool` answer tells the agent how to queue heavy work through Queue's CLI itself. A session
+  that outlived a restart of this module is told once, at its next tool call, that its MCP tools may
+  fail for a while; Vibe opens a fresh connection to an HTTP MCP server for each call and retries an
+  unreachable one by itself, and `r` in its `/mcp` panel refreshes them at once.
 - **The kehikko's MCP doors** — the host's and each module's, each carrying the conversation's place
   token — are given to that one process in `VIBE_MCP_SERVERS`, which Vibe merges with the person's own
   servers by name.

@@ -1,5 +1,5 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { guardDecision, guardSays, researchLine, sessionNotes, subagentNotes, type NotesPlace, type NotesTold, type PlacedGuard } from 'kehikot-module-protocol'
 
@@ -7,6 +7,7 @@ import type { DoorsAsked, HostPlace } from './doorConfig.ts'
 import { ID } from './manifest.ts'
 import { placeKey, readPlaceKey } from './place.ts'
 import type { Program } from './program.ts'
+import { BOOT, queueCli, restartNote, restartedSince } from './restarted.ts'
 import { heldSkills, kitSkills, skillsText, writeNotes } from './skills.ts'
 import { PLACE_TOKEN, born, byToken, homeOf, projectRoot, readPlaces, readSettings, type NamedPlace, type Places } from './record.ts'
 
@@ -78,6 +79,10 @@ export interface ContextNeeds {
   later?(run: () => void, ms: number): void
   /** Keep the guards the host handed for a token's session (protocol 2.61.0), for its pre-tool hook (`guard`). Absent: not kept. */
   keepGuards?(token: string, guards: PlacedGuard[]): void
+  /** The guards last kept for a token's session: what names Queue's CLI in the note after a restart. */
+  keptGuards?(token: string): { at: number; guards: PlacedGuard[] } | null
+  /** This process's start (`BOOT`), for the marker that says a session outlived a restart; a test passes its own. */
+  boot?: string
 }
 
 export type ContextEvent = 'SessionStart' | 'PostToolUse'
@@ -317,6 +322,8 @@ export async function startText(asked: { session: string | null; token: string |
   const notes = sessionNotes(input, 'start', null)
   if (notes.text === null) return null
   const text = withSkills(notes.text, token, needs)
+  /* A session started now has its tools: marked, so only a restart after this is told (restarted.ts). */
+  restartedSince(bootFile(needs.toldFile(token)), needs.boot ?? BOOT)
   if (asked.record) writeTold(needs.toldFile(token), { ...notes.told, said: { start: { at: Date.now(), text }, changes: [] } })
   return text
 }
@@ -342,7 +349,10 @@ export async function context(asked: { event: string; session: string; token: st
   const file = needs.toldFile(token)
   const told = readTold(file)
   const notes = sessionNotes(input, 'prompt', told)
-  if (notes.text === null) return null
+  /* A session that outlived a restart of this module (and so of its door, and likely Kehikot's) is told once, at the first hook call after it, that its tools may fail for a while and how to queue work from the shell (restarted.ts). Vibe has no hook at a prompt: this one is its first chance. */
+  const restarted = restartedSince(bootFile(file), needs.boot ?? BOOT)
+  const note = restarted ? restartNote(queueCli(needs.keptGuards?.(token)?.guards), RECONNECT) : null
+  if (notes.text === null) return note ? { hook_specific_output: { additional_context: note } } : null
   const text = notes.kind === 'start' ? withSkills(notes.text, token, needs) : notes.text
   const at = Date.now()
   const said: Said = notes.kind === 'start' || !told?.said ? { start: { at, text }, changes: [] } : { start: told.said.start, changes: [...told.said.changes, { at, text }].slice(-SAID_CHANGES) }
@@ -351,8 +361,18 @@ export async function context(asked: { event: string; session: string; token: st
   /* Without the messages: they were said once, at this prompt, and a /clear must not say them again. */
   const whole = sessionNotes({ ...input, messages: null, messagesMore: 0 }, 'start', null).text
   if (whole !== null) writeNotes(needs.kitOf?.(token) ?? null, withSkills(whole, token, needs))
-  return { hook_specific_output: { additional_context: text } }
+  return { hook_specific_output: { additional_context: note ? `${text}\n\n${note}` : text } }
 }
+
+/** The marker beside what a session was told that names the process that last told it (restarted.ts). */
+const bootFile = (toldFile: string): string => join(dirname(toldFile), 'boot')
+
+/**
+ * How the person brings back MCP servers Vibe could not reach, said in the note after a restart. Vibe
+ * opens a fresh connection to an HTTP MCP server for every call, keeps the tools it listed, and
+ * retries an unreachable server by itself (3.1.1); `r` in its `/mcp` panel refreshes them at once.
+ */
+export const RECONNECT = 'Vibe reaches the tools again by itself once Kehikot is back; the person can refresh them at once by opening /mcp and pressing r.'
 
 /* ------------------------------------------------------------------------ *
  * Guards and subagents (protocol 2.61.0)
@@ -457,7 +477,7 @@ export interface GuardNeeds extends Pick<ContextNeeds, 'program' | 'startedOf' |
  * while fresh (`GUARDS_FRESH_MS`), else the host is asked again, without messages. Any doubt — no
  * place, no host, a token this module did not give out — is null: the tool runs as asked.
  */
-export async function guard(asked: { session: string; token: string | null; input: unknown; direct?: boolean }, needs: GuardNeeds): Promise<GuardAnswer | null> {
+export async function guard(asked: { session: string; token: string | null; input: unknown; direct?: boolean }, needs: GuardNeeds): Promise<GuardAnswer | null | typeof UNKNOWN> {
   const { session, token } = asked
   if (!needs.program.isId(session) || !token || !PLACE_TOKEN.test(token)) return null
   const tool = toolOf(asked.input)
@@ -472,6 +492,8 @@ export async function guard(asked: { session: string; token: string | null; inpu
   if (tool.name === GUARD_TOOLS.spawn) {
     if (!where?.place) return null
     const answer = await ask()
+    /* The host did not answer (Kehikot restarting) and nothing was kept: the subagent cannot be told what holds its commands yet. guard.sh asks again. */
+    if (!answer && !kept) return UNKNOWN
     if (answer) needs.keepGuards(token, answer.guards ?? [])
     const guards = answer ? (answer.guards ?? null) : (kept?.guards ?? null)
     const unread = Boolean(where.place.kehikko && !where.kehikko)
@@ -499,9 +521,14 @@ export async function guard(asked: { session: string; token: string | null; inpu
   let guards = kept && now - kept.at < GUARDS_FRESH_MS ? kept.guards : null
   if (guards === null) {
     const answer = await ask()
+    /* The session has a place, the host did not answer (Kehikot restarting) and nothing was kept: not known, so not "no guards". guard.sh asks again. */
+    if (where?.place && !answer && !kept) return UNKNOWN
     /* No answer: the last guards heard stand, for a conversation that still belongs somewhere. */
     guards = answer ? (answer.guards ?? []) : where?.place ? (kept?.guards ?? []) : []
     needs.keepGuards(token, guards)
   }
   return guardAnswer(asked.input, guards, Boolean(asked.direct), token)
 }
+
+/** What `guard` answers when the session's guards cannot be known now: `/api/guard` says 503, and the hook asks again while Kehikot restarts. */
+export const UNKNOWN = 'unknown' as const

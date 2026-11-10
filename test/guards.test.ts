@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -8,7 +8,7 @@ import { join } from 'node:path'
 
 import type { PlacedGuard } from 'kehikot-module-protocol'
 
-import { GUARD_MATCH, GUARDS_FRESH_MS, HANDED_OFF, SPAWN_SAID, guard, guardAnswer, handedOff, spawnAnswer, type GuardNeeds } from '../context.ts'
+import { GUARD_MATCH, GUARDS_FRESH_MS, HANDED_OFF, SPAWN_SAID, UNKNOWN, guard, guardAnswer, handedOff, spawnAnswer, type GuardNeeds } from '../context.ts'
 import { hostPlace, type DoorsAsked, type HostPlace } from '../doorConfig.ts'
 import { PROGRAM } from '../program.ts'
 import { hooksFileIn, sessionKit } from '../skills.ts'
@@ -161,6 +161,16 @@ describe('the session’s guards, as the host hands them', () => {
     expect(await guard({ session: 'nope', token: TOKEN, input: bash('bun test') }, world([answer([QUEUE])]).needs)).toBeNull()
   })
 
+  test('Kehikot away and nothing kept: not known, never "no guards" — for a command and a subagent alike; once kept, the kept ones stand', async () => {
+    const away = world([null])
+    expect(await guard({ session: SESSION, token: TOKEN, input: bash('bun test') }, away.needs)).toBe(UNKNOWN)
+    expect(await guard({ session: SESSION, token: TOKEN, input: { ...bash(''), tool_name: 'agents.spawn', tool_input: { name: 'scout', message: 'Run the tests.' } } }, away.needs)).toBe(UNKNOWN)
+    const back = world([answer([QUEUE]), null])
+    await guard({ session: SESSION, token: TOKEN, input: bash('bun test') }, back.needs)
+    back.later(GUARDS_FRESH_MS)
+    expect(await guard({ session: SESSION, token: TOKEN, input: bash('bun test') }, back.needs)).toMatchObject({ hook_specific_output: {} })
+  })
+
   test('another tool is never looked into: the host is not asked', async () => {
     const w = world([answer([QUEUE])])
     expect(await guard({ session: SESSION, token: TOKEN, input: { ...bash('bun test'), tool_name: 'file_system.read_file' } }, w.needs)).toBeNull()
@@ -284,12 +294,110 @@ describe('guard.sh, from a session’s own folder', () => {
     expect(await ran(dir, JSON.stringify(bash('ls')))).toEqual({ code: 0, out: '' })
     reply = { status: 500, body: '{"decision":"deny","reason":"x"}' }
     expect(await ran(dir, JSON.stringify(bash('ls')))).toEqual({ code: 0, out: '' })
-    expect(await ran(await kit('http://127.0.0.1:9'), JSON.stringify(bash('ls')))).toEqual({ code: 0, out: '' })
     heard.length = 0
     expect(await ran(await kit('http://example.com'), JSON.stringify(bash('ls')))).toEqual({ code: 0, out: '' })
     expect(await ran(dir, '{"tool_name":"file_system.bash"}')).toEqual({ code: 0, out: '' })
     writeFileSync(join(dir, 'kehikot', 'token'), 'abc; curl evil')
     expect(await ran(dir, JSON.stringify(bash('ls')))).toEqual({ code: 0, out: '' })
     expect(heard).toHaveLength(0)
+  })
+
+  /* Kehikot restarting while the session runs: the host and this module away, then back on new ports. */
+  describe('across a restart of Kehikot', () => {
+    const REWRITE = JSON.stringify(guardAnswer(bash('bun test'), [QUEUE]))
+    /** A stand-in for this module (or the host in front of it) that can be away, say 503, or answer, and can move. */
+    async function standIn(first: { status: number; body: string } | 'away') {
+      let now = first
+      const asked: string[] = []
+      const one = createServer((request, response) => {
+        request.resume()
+        request.on('end', () => {
+          asked.push(request.url ?? '')
+          const said = now === 'away' ? { status: 503, body: 'not up' } : now
+          response.writeHead(said.status, { 'content-type': 'application/json' }).end(said.status === 204 ? undefined : said.body)
+        })
+      })
+      await new Promise<void>((done) => one.listen(0, '127.0.0.1', done))
+      const url = `http://127.0.0.1:${(one.address() as AddressInfo).port}`
+      return { url, asked, set: (next: typeof now) => (now = next), close: () => new Promise<void>((done) => one.close(() => done())) }
+    }
+    /** A port nothing answers on. */
+    async function deadUrl(): Promise<string> {
+      const one = createServer()
+      await new Promise<void>((done) => one.listen(0, '127.0.0.1', done))
+      const port = (one.address() as AddressInfo).port
+      await new Promise<void>((done) => one.close(() => done()))
+      return `http://127.0.0.1:${port}`
+    }
+    async function kitWith(options: { origin: string; registration?: string }): Promise<string> {
+      const base = mkdtempSync(join(scratch, 'base-'))
+      const dir = (await sessionKit([], { base, personal: [], token: TOKEN, registration: options.registration ?? join(scratch, 'none.json') })).dir
+      writeFileSync(join(dir, 'kehikot', 'origin'), options.origin)
+      return dir
+    }
+
+    test('nobody answers: after the wait the tool runs as asked, the person is shown it ran unguarded, and context.sh is left to tell the agent', async () => {
+      const dir = await kitWith({ origin: await deadUrl() })
+      const got = await ran(dir, JSON.stringify(bash('bun test')), { KEHIKOT_GUARD_WAIT: '0' })
+      expect(got.code).toBe(0)
+      const said = JSON.parse(got.out)
+      expect(Object.keys(said)).toEqual(['system_message'])
+      expect(said.system_message).toContain('ran without the guards')
+      expect(existsSync(join(dir, 'kehikot', 'unguarded'))).toBe(true)
+    })
+
+    test('the module comes back on another port within the wait: its registration is followed and the guard applies', async () => {
+      const registration = join(scratch, 'registration-moving.json')
+      const old = await deadUrl()
+      writeFileSync(registration, JSON.stringify({ id: 'kehikot.vibe', url: old }))
+      const dir = await kitWith({ origin: old, registration })
+      const running = ran(dir, JSON.stringify(bash('bun test')), { KEHIKOT_GUARD_WAIT: '10' })
+      await Bun.sleep(1500)
+      const back = await standIn({ status: 200, body: REWRITE })
+      writeFileSync(registration, JSON.stringify({ id: 'kehikot.vibe', url: back.url }))
+      const got = await running
+      await back.close()
+      expect(got).toEqual({ code: 0, out: `${REWRITE}\n` })
+      expect(back.asked).toHaveLength(1)
+      expect(existsSync(join(dir, 'kehikot', 'unguarded'))).toBe(false)
+    }, 15_000)
+
+    test('the stable address is asked first; the host saying the module is not up yet is waited out, and the guard applies', async () => {
+      const host = await standIn('away')
+      const dir = await kitWith({ origin: await deadUrl() })
+      writeFileSync(join(dir, 'kehikot', 'stable'), host.url)
+      const running = ran(dir, JSON.stringify(bash('bun test')), { KEHIKOT_GUARD_WAIT: '10' })
+      await Bun.sleep(1500)
+      host.set({ status: 200, body: REWRITE })
+      const got = await running
+      await host.close()
+      expect(got).toEqual({ code: 0, out: `${REWRITE}\n` })
+      expect(host.asked.length).toBeGreaterThan(1)
+      expect(host.asked.every((one) => one === `/api/guard?session=${SESSION}&direct=0`)).toBe(true)
+    }, 15_000)
+
+    test('the module saying it cannot know the guards yet (503) is asked again, not taken for "no guards"', async () => {
+      const module = await standIn({ status: 503, body: '{"ok":false}' })
+      const dir = await kitWith({ origin: module.url })
+      const running = ran(dir, JSON.stringify(bash('bun test')), { KEHIKOT_GUARD_WAIT: '10' })
+      await Bun.sleep(1200)
+      module.set({ status: 200, body: REWRITE })
+      expect(await running).toEqual({ code: 0, out: `${REWRITE}\n` })
+      await module.close()
+    }, 15_000)
+
+    test('while Kehikot stays away, the next calls do not wait again; once it answers, they wait again next time', async () => {
+      const dir = await kitWith({ origin: await deadUrl() })
+      await ran(dir, JSON.stringify(bash('bun test')), { KEHIKOT_GUARD_WAIT: '1' })
+      const started = Date.now()
+      const again = await ran(dir, JSON.stringify(bash('bun test')), { KEHIKOT_GUARD_WAIT: '10' })
+      expect(Date.now() - started).toBeLessThan(5000)
+      expect(again.out).toContain('ran without the guards')
+      const module = await standIn({ status: 204, body: '' })
+      writeFileSync(join(dir, 'kehikot', 'origin'), module.url)
+      expect(await ran(dir, JSON.stringify(bash('bun test')))).toEqual({ code: 0, out: '' })
+      await module.close()
+      expect(existsSync(join(dir, 'kehikot', 'away'))).toBe(false)
+    }, 15_000)
   })
 })

@@ -126,7 +126,7 @@ export const RESEARCH_LINE = researchLine(SELF)
 
 export function readTold(file: string): Told | null {
   try {
-    const said = JSON.parse(readFileSync(file, 'utf8')) as { key?: unknown; version?: unknown; modules?: unknown; absent?: unknown; names?: unknown; said?: unknown; kehikkoSkills?: unknown }
+    const said = JSON.parse(readFileSync(file, 'utf8')) as { key?: unknown; version?: unknown; modules?: unknown; absent?: unknown; names?: unknown; said?: unknown; kehikkoSkills?: unknown; lines?: unknown; act?: unknown; versions?: unknown; host?: unknown }
     const ids = (list: unknown): string[] | null => (Array.isArray(list) ? list.filter((one): one is string => typeof one === 'string') : null)
     const names = said.names && typeof said.names === 'object' && !Array.isArray(said.names) ? Object.fromEntries(Object.entries(said.names).filter((pair): pair is [string, string] => typeof pair[1] === 'string')) : undefined
     return {
@@ -137,6 +137,11 @@ export function readTold(file: string): Told | null {
       ...(said.absent !== undefined ? { absent: ids(said.absent) } : {}),
       ...(names ? { names } : {}),
       ...(marks(said.kehikkoSkills) ? { kehikkoSkills: marks(said.kehikkoSkills)! } : {}),
+      /* What each module said to agents, and the versions told (protocol 2.50.0, 2.62.0): kept, or a reworded line or an update is never told. */
+      ...(marks(said.lines) ? { lines: marks(said.lines)! } : {}),
+      ...(typeof said.act === 'boolean' ? { act: said.act } : {}),
+      ...(marks(said.versions) ? { versions: marks(said.versions)! } : {}),
+      ...(typeof said.host === 'string' ? { host: said.host } : {}),
       ...(saidOf(said.said) ? { said: saidOf(said.said)! } : {}),
     }
   } catch {
@@ -278,6 +283,8 @@ async function placed(projectPath: string, started: Started, session: string | n
          at its start; one added since, or hidden by a skill of the person's own by its name, is said
          with where to read it. A session with no folder loads none of them. */
       kehikkoSkills: place?.kehikko && !kehikko ? null : (answer?.kehikkoSkills ?? null),
+      /* Kehikot's own changes for agents (protocol 2.62.0); each module's are on it in `modules`. Said once after an update. */
+      host: answer?.host ?? null,
       holds: kit ? heldSkills(kitSkills(kit)) : null,
       ...(kit ? {} : { loadsKehikkoSkills: false }),
     },
@@ -435,7 +442,7 @@ export function spawnAnswer(input: unknown, notes: string | null): GuardAnswer |
   return { hook_specific_output: { tool_input: { ...tool.args, message: `${tool.args.message}\n\n${notes}` } }, system_message: SPAWN_SAID }
 }
 
-export interface GuardNeeds extends Pick<ContextNeeds, 'program' | 'startedOf' | 'host' | 'kitOf'> {
+export interface GuardNeeds extends Pick<ContextNeeds, 'program' | 'startedOf' | 'host' | 'kitOf'>, Partial<Pick<ContextNeeds, 'toldFile'>> {
   /** The guards kept for a token's session, and when; null when none are kept. */
   keptGuards(token: string): { at: number; guards: PlacedGuard[] } | null
   keepGuards(token: string, guards: PlacedGuard[]): void
@@ -478,9 +485,13 @@ export async function guard(asked: { session: string; token: string | null; inpu
         self: SELF,
         holds: kit ? heldSkills(kitSkills(kit)) : null,
         kehikkoSkills: unread ? null : (answer?.kehikkoSkills ?? null),
+        /* Kehikot's own changes for agents (protocol 2.62.0), told to a subagent as to its session. */
+        host: answer?.host ?? null,
         ...(kit ? {} : { loadsKehikkoSkills: false }),
       },
       guards,
+      /* What the session was last told: what changed since then is said to the subagent too (protocol 2.62.0). Nothing is written. */
+      needs.toldFile ? readTold(needs.toldFile(token)) : null,
     )
     return spawnAnswer(asked.input, notes)
   }

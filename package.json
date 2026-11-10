@@ -13,6 +13,8 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "check:parts": "kehikot-check-parts .",
+    "rows": "bun dev/rows.ts",
+    "check:rows": "kehikot-check-rows .",
     "check:door": "kehikot-check-door"
   },
   "dependencies": {
@@ -24,7 +26,7 @@
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "kehikot-module-protocol": "git+https://github.com/Jalez/kehikko-protocol.git#v2.69.0",
+    "kehikot-module-protocol": "git+https://github.com/Jalez/kehikko-protocol.git#467b5cc113a63f60791df9b86276cd8b07160832",
     "lucide-react": "^1.33.0",
     "node-pty": "^1.1.0",
     "react": "^19.2.8",

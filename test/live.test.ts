@@ -2182,7 +2182,7 @@ describe('a session started here knows its place and its kehikko’s modules, an
     const run = (await w.runs.open(ask(dir, null, KEYED), new Watcher())) as Run
     const input = (command: string) => ({ session_id: B, parent_session_id: null, hook_event_name: 'pre_tool', tool_name: 'file_system.bash', tool_input: { command } })
     const before = asked.length
-    expect(await w.runs.guard(B, run.token!, input('bun test'), false)).toMatchObject({ hook_specific_output: { tool_input: { command: "kehikot-queue run -- sh -c 'bun test'" } } })
+    expect(await w.runs.guard(B, run.token!, input('bun test'), false)).toMatchObject({ hook_specific_output: { tool_input: { command: `KEHIKOT_DETACH=1 KEHIKOT_PLACE=${run.token!} kehikot-queue run -- sh -c 'bun test'` } } })
     /* Kept from the start's ask: the host is not asked again for a command. */
     expect(asked.length).toBe(before)
     expect(await w.runs.guard(B, run.token!, input('git status'), false)).toBeNull()

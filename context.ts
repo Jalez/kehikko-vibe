@@ -389,9 +389,10 @@ const toolOf = (input: unknown): { name: string; args: Record<string, unknown> }
  * rewrite gives the WHOLE input back with only `command` changed, and nothing about permission, so
  * the person's approval rules judge the command that will run. A deny refuses with the module's words
  * (`guardSays`). Null: run it as written — another tool, no command, no guard, or `direct`
- * (KEHIKOT_DIRECT in the session's environment, or in a background command's own `env`).
+ * (KEHIKOT_DIRECT in the session's environment, or in a background command's own `env`). A rewritten
+ * `file_system.bash` command is handed off (`handedOff`); `process.start` already runs in the background.
  */
-export function guardAnswer(input: unknown, guards: readonly PlacedGuard[], direct = false): GuardAnswer | null {
+export function guardAnswer(input: unknown, guards: readonly PlacedGuard[], direct = false, token: string | null = null): GuardAnswer | null {
   const tool = toolOf(input)
   if (!tool || (tool.name !== GUARD_TOOLS.shell && tool.name !== GUARD_TOOLS.background)) return null
   if (typeof tool.args.command !== 'string') return null
@@ -404,8 +405,23 @@ export function guardAnswer(input: unknown, guards: readonly PlacedGuard[], dire
   const decision = guardDecision(guards, tool.args.command, { tool: 'shell', env })
   if (decision.action === 'pass') return null
   if (decision.action === 'deny') return { decision: 'deny', reason: guardSays(decision) }
-  return { hook_specific_output: { tool_input: { ...tool.args, command: decision.command } }, system_message: guardSays(decision) }
+  if (tool.name === GUARD_TOOLS.background) return { hook_specific_output: { tool_input: { ...tool.args, command: decision.command } }, system_message: guardSays(decision) }
+  return { hook_specific_output: { tool_input: { ...tool.args, command: handedOff(decision.command, token) } }, system_message: `${guardSays(decision)} ${HANDED_OFF}` }
 }
+
+/**
+ * The command a guard rewrote, as it runs here. Vibe's `file_system.bash` waits for its command to exit, up to its `timeout`, and a guard's command may wait its turn for
+ * many minutes — Queue's `run --guard` waits in line. So it is asked to hand the work off and return
+ * at once (`KEHIKOT_DETACH=1`), and the module that took it tells this session when it ends, by the
+ * session's place token (`KEHIKOT_PLACE`, as a session hands its token to every door it calls). A
+ * command that heeds neither runs as before.
+ */
+export function handedOff(command: string, token: string | null): string {
+  return `KEHIKOT_DETACH=1 ${token && PLACE_TOKEN.test(token) ? `KEHIKOT_PLACE=${token} ` : ''}${command}`
+}
+
+/** What the agent is told beside a handed-off command. */
+export const HANDED_OFF = "Queued work returns at once with its run's id; you'll be notified here when it finishes."
 
 /**
  * A subagent's brief with what a subagent is told (the protocol's `subagentNotes`) after it, as a
@@ -476,5 +492,5 @@ export async function guard(asked: { session: string; token: string | null; inpu
     guards = answer ? (answer.guards ?? []) : where?.place ? (kept?.guards ?? []) : []
     needs.keepGuards(token, guards)
   }
-  return guardAnswer(asked.input, guards, Boolean(asked.direct))
+  return guardAnswer(asked.input, guards, Boolean(asked.direct), token)
 }

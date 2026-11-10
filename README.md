@@ -46,7 +46,10 @@ framing it: a session belongs to a project, and only a host says which.
   module about each shell command, the session's and its subagents' (they inherit its hooks): one a
   placed module guards is run through that module's command (`hook_specific_output.tool_input`, which
   Vibe re-validates and shows in its approval prompt) or refused with its reason (`decision: deny`,
-  the tool error the model reads). `KEHIKOT_DIRECT=1` in front of a command passes. Vibe has no hook at
+  the tool error the model reads). `file_system.bash` waits for its command, so a rewrite there is
+  handed off: `KEHIKOT_DETACH=1 KEHIKOT_PLACE=<the session's place token>` goes in front, and a queued
+  run returns at once with its id and is told to the session when it ends (`process.start` already
+  runs in the background and is left as it is). `KEHIKOT_DIRECT=1` in front of a command passes. Vibe has no hook at
   a subagent's start, so a subagent's brief is given the protocol's `subagentNotes` after it, by the
   same hook rewriting `agents.spawn`'s `message`. The guards are asked of the host with each tool's
   notes and kept 30 seconds; no answer, a host too old to say, or anything going wrong lets the

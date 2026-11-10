@@ -16,7 +16,9 @@ import { PROGRAM, TELLS, type Active, type Program, type Recorded } from '../pro
 import { assign, detach, ignore, readPlaces, sessionsAt, readSettings, tokenFor, writeSettings, type NamedPlace } from '../record.ts'
 import type { DoorsAsked, HostPlace, ModuleOn, SessionDoor } from '../doorConfig.ts'
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { NOTES_HEAD, forVibe, skillText } from '../skills.ts'
+import { GUARD_TIMEOUT, NOTES_HEAD, forVibe, skillText } from '../skills.ts'
+import { readKeptGuards } from '../restarted.ts'
+import type { PlacedGuard } from 'kehikot-module-protocol'
 import { CONFIG } from './setup.ts'
 
 /**
@@ -2191,6 +2193,68 @@ describe('a session started here knows its place and its kehikko’s modules, an
     guards = []
     await w.runs.context('PostToolUse', B, run.token!)
     expect(await w.runs.guard(B, run.token!, input('bun test'), false)).toBeNull()
+  })
+
+  /* Kehikot restarting while the session runs (restarted.ts). */
+  const QUEUE_CLI = "'/Users/x/Application Support/queue/bin/kehikot-queue'"
+  const QUEUE_GUARD: PlacedGuard = { module: 'kehikot.queue', name: 'Queue', guard: { id: 'heavy', tool: 'shell', match: { commands: ['bun test'] }, action: 'rewrite', rewrite: `${QUEUE_CLI} run --guard -- sh -c {command}`, why: 'Heavy runs wait their turn.' } }
+  const bashInput = (command: string) => ({ session_id: B, parent_session_id: null, hook_event_name: 'pre_tool', tool_name: 'file_system.bash', tool_input: { command } })
+  /** A host whose place answers with `guards`, or throws while `down`. */
+  const awayHost = (down: { now: boolean }) => {
+    const h = host([NOTES])
+    const place = async (one: DoorsAsked) => {
+      if (down.now) throw new Error('ECONNREFUSED')
+      const said = await h.place(one)
+      return said ? { ...said, guards: [QUEUE_GUARD] } : null
+    }
+    return { ...h, place }
+  }
+
+  test('Kehikot away and nothing kept: the guards are not known — guard.sh asks again — never taken for "no guards"; once kept, they are on disk beside what the session was told', async () => {
+    const dir = project()
+    const down = { now: true }
+    const h = awayHost(down)
+    const w = world({ fetch, configures: true, plugins: true, doors: h.doors, place: h.place, configBase: project() })
+    const run = (await w.runs.open(ask(dir, null, KEYED), new Watcher())) as Run
+    expect(await w.runs.guard(B, run.token!, bashInput('bun test'), false)).toBe('unknown')
+    /* A subagent's start too: it cannot be told what holds its commands yet. */
+    expect(await w.runs.guard(B, run.token!, { ...bashInput(''), tool_name: 'agents.spawn', tool_input: { message: 'Run the tests.' } }, false)).toBe('unknown')
+    down.now = false
+    expect(await w.runs.guard(B, run.token!, bashInput('bun test'), false)).toMatchObject({ hook_specific_output: { tool_input: {} } })
+    expect(readKeptGuards(join(run.plugin!, 'kehikot', 'guards.json'))?.guards).toEqual([QUEUE_GUARD])
+  })
+
+  test('a session that outlived a restart of this module is told once, at its next tool call, that its tools may fail and how to queue from the shell', async () => {
+    const dir = project()
+    const h = awayHost({ now: false })
+    const w = world({ fetch, configures: true, plugins: true, doors: h.doors, place: h.place, configBase: project() })
+    const run = (await w.runs.open(ask(dir, null, KEYED), new Watcher())) as Run
+    const token = run.token!
+    /* Marked at its start: not told. */
+    expect(said(await w.runs.context('PostToolUse', B, token)) ?? '').not.toContain('Kehikot restarted')
+    /* The marker an earlier process of this module left: it started again in between. */
+    writeFileSync(join(run.plugin!, 'kehikot', 'boot'), '1-1')
+    const told = said(await w.runs.context('PostToolUse', B, token))!
+    expect(told).toContain('Kehikot restarted since your last turn')
+    expect(told).toContain(`\`${QUEUE_CLI} run --kind verify -- <command>\``)
+    expect(told).toContain('opening /mcp and pressing r')
+    expect(said(await w.runs.context('PostToolUse', B, token)) ?? '').not.toContain('Kehikot restarted')
+  })
+
+  test('its folder names Kehikot’s stable address for this module when the doors are written on it, and gives the guard time to wait for a restart', async () => {
+    const dir = project()
+    const h = host([NOTES])
+    const doors = async (one: DoorsAsked) => (await h.doors(one)).map((door) => ({ ...door, url: `http://127.0.0.1:4170/m/${door.module}/mcp?kehikot-place=${one.token}` }))
+    const w = world({ fetch, configures: true, plugins: true, doors, place: h.place, configBase: project() })
+    const run = (await w.runs.open(ask(dir, null, KEYED), new Watcher())) as Run
+    expect(readFileSync(join(run.plugin!, 'kehikot', 'stable'), 'utf8')).toBe('http://127.0.0.1:4170/m/kehikot.vibe')
+    const hooks = readFileSync(join(run.plugin!, '.vibe', 'hooks.toml'), 'utf8')
+    const guardHook = hooks.split('[[hooks]]').find((one) => one.includes('guard.sh'))!
+    expect(guardHook).toContain(`timeout = ${GUARD_TIMEOUT.toFixed(1)}`)
+    expect(GUARD_TIMEOUT).toBeGreaterThanOrEqual(25)
+    /* Doors not written on the host's stable addresses: none. */
+    const plain = (await started(host([NOTES]), project())).run
+    expect(existsSync(join(plain.plugin!, 'kehikot', 'stable'))).toBe(false)
   })
 
   test('its folder holds the context script and its token, 0600, and the token is on no command line but the doors’', async () => {

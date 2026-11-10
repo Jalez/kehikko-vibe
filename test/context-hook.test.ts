@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -134,5 +134,51 @@ describe('context.sh, from a session’s own folder', () => {
     expect(await ran(dir, 'PostToolUse', hookInput('PostToolUse'))).toEqual({ code: 0, out: '' })
     expect(heard).toHaveLength(0)
     expect(readFileSync(join(dir, 'context.sh'), 'utf8')).toContain('PostToolUse')
+  })
+
+  /* Kehikot restarting while the session runs (see guard.sh). */
+  describe('across a restart of Kehikot', () => {
+    /** A port nothing answers on. */
+    async function deadUrl(): Promise<string> {
+      const one = createServer()
+      await new Promise<void>((done) => one.listen(0, '127.0.0.1', done))
+      const port = (one.address() as AddressInfo).port
+      await new Promise<void>((done) => one.close(() => done()))
+      return `http://127.0.0.1:${port}`
+    }
+
+    test('the stable address is asked first', async () => {
+      const dir = await plugin({ origin: await deadUrl() })
+      writeFileSync(join(dir, 'kehikot', 'stable'), origin)
+      heard.length = 0
+      answer = { status: 200, body: ANSWER }
+      expect((await ran(dir, 'PostToolUse', hookInput('PostToolUse'))).out).toBe(`${ANSWER}\n`)
+      expect(heard.map((one) => one.url)).toEqual([`/api/context?event=PostToolUse&session=${SESSION}`])
+    })
+
+    test('after guard.sh let a tool through unguarded, the agent is told so and how to queue — alone while nobody answers, before what the module says once it does — and once', async () => {
+      const dir = await plugin({ origin: await deadUrl() })
+      writeFileSync(join(dir, 'kehikot', 'unguarded'), '')
+      const alone = await ran(dir, 'PostToolUse', hookInput('PostToolUse'))
+      expect(alone.code).toBe(0)
+      const told = JSON.parse(alone.out).hook_specific_output.additional_context as string
+      expect(told).toContain('ran without the guards')
+      expect(told).toContain('`kehikot-queue run -- <command>`')
+      expect(existsSync(join(dir, 'kehikot', 'unguarded'))).toBe(false)
+      expect((await ran(dir, 'PostToolUse', hookInput('PostToolUse'))).out).toBe('')
+      /* The module back: its answer follows the note, in one answer. */
+      writeFileSync(join(dir, 'kehikot', 'origin'), origin)
+      writeFileSync(join(dir, 'kehikot', 'unguarded'), '')
+      answer = { status: 200, body: ANSWER }
+      const both = JSON.parse((await ran(dir, 'PostToolUse', hookInput('PostToolUse'))).out).hook_specific_output.additional_context as string
+      expect(both.startsWith(told)).toBe(true)
+      expect(both.endsWith('\n\nKehikot: the kehikko changed.')).toBe(true)
+      /* A subagent's tool: told too, and nothing is asked. */
+      writeFileSync(join(dir, 'kehikot', 'unguarded'), '')
+      heard.length = 0
+      const sub = await ran(dir, 'PostToolUse', JSON.stringify({ session_id: SESSION, parent_session_id: '22222222-2222-4222-8222-222222222222' }))
+      expect(JSON.parse(sub.out).hook_specific_output.additional_context).toBe(told)
+      expect(heard).toHaveLength(0)
+    })
   })
 })

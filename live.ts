@@ -19,15 +19,16 @@ import { isKehikkoKey, kehikkoOf, placeKey, sortedParts, type Kehikko } from './
 import { cutOffs, cutOffWords, lastPrompt, midTurn, type CutOff } from './cutoff.ts'
 import { PROGRAM, TELLS, headOf, home, learnSession, recordFile, sessionName, type Active, type ActiveStatus, type HookGroup, type Program, type Running, type State } from './program.ts'
 import { PLACE_TOKEN, assign, attach, born, byToken, follow, homeOf, isDetached, markSession, markSessions, note, projectRoot, readPlaces, readSettings, recordedIds, sighted, stayDetached, tokenFor, type NamedPlace, type PlaceEntry, type Places, type SessionEntry } from './record.ts'
-import { contextScriptIn, guardScriptIn, removeKit, sessionKit, sweepKits, writeHooks, writeNotes } from './skills.ts'
+import { GUARD_TIMEOUT, contextScriptIn, guardScriptIn, removeKit, sessionKit, sweepKits, writeHooks, writeNotes } from './skills.ts'
 import { sessionEnv, sessionFlags } from './settings.ts'
 import { REPLY, StatusReader, type Report } from './status.ts'
 import { doorEnv, freshToken, hostDoors, hostPlace, type DoorsAsked, type HostPlace, type SessionDoor } from './doorConfig.ts'
 import { readPlaceKey } from './place.ts'
 import { AGENT_ID, AGENT_TYPE, FOUND_MOST, isResearch, subagentTask, type Found, type Told } from './research.ts'
-import { GUARD_MATCH, context, guard, startText, toldWords, type GuardAnswer, type HookAnswer, type Said, type Started } from './context.ts'
+import { GUARD_MATCH, UNKNOWN, context, guard, startText, toldWords, type GuardAnswer, type HookAnswer, type Said, type Started } from './context.ts'
 import type { PlacedGuard } from 'kehikot-module-protocol'
 import { ID } from './manifest.ts'
+import { readKeptGuards, writeKeptGuards } from './restarted.ts'
 
 /**
  * The sessions that are running, and the socket a page watches one through.
@@ -2233,15 +2234,32 @@ export class Runs {
       told: (projectPath, assigned) => this.told(projectPath, assigned),
       log: this.log,
       later: (run, ms) => setTimeout(run, ms).unref?.(),
-      keepGuards: (one, guards) => this.keepGuards(one, guards),
+      keepGuards: (one, guards) => this.keepGuards(one, guards, kit),
+      keptGuards: (one) => this.keptGuards(one, kit),
     }
   }
 
-  private keepGuards(token: string, guards: PlacedGuard[]): void {
+  /** Where a token's guards are kept on disk: beside what its conversation was told, in its folder. Null while no folder is known for it. */
+  private guardsFileOf(token: string, kit?: string): string | null {
+    const dir = kit ?? (PLACE_TOKEN.test(token) ? this.kitOf(token) : null)
+    return dir ? join(dir, 'kehikot', 'guards.json') : null
+  }
+
+  private keepGuards(token: string, guards: PlacedGuard[], kit?: string): void {
+    const before = this.guardsKept.get(token)
     this.guardsKept.delete(token)
     this.guardsKept.set(token, { at: Date.now(), guards })
     /* Bounded: the oldest tokens go first. */
     while (this.guardsKept.size > 256) this.guardsKept.delete(this.guardsKept.keys().next().value!)
+    /* On disk too, beside what the session was told, so a restart of this module while the host is away still knows them (restarted.ts). Written when they change. */
+    const file = this.guardsFileOf(token, kit)
+    if (file && JSON.stringify(before?.guards ?? null) !== JSON.stringify(guards)) writeKeptGuards(file, guards)
+  }
+
+  /** The guards kept for a token's session: this process's, else those a process before it kept on disk (old: the host is asked first). */
+  private keptGuards(token: string, kit?: string): { at: number; guards: PlacedGuard[] } | null {
+    const file = this.guardsFileOf(token, kit)
+    return this.guardsKept.get(token) ?? (file ? readKeptGuards(file) : null)
   }
 
   /**
@@ -2249,7 +2267,7 @@ export class Runs {
    * becomes of one shell command, the session's or a subagent's, under the guards of the modules placed
    * on its kehikko, or a subagent's brief with its notes. Null: run it as asked.
    */
-  async guard(session: string, token: string | null, input: unknown, direct: boolean): Promise<GuardAnswer | null> {
+  async guard(session: string, token: string | null, input: unknown, direct: boolean): Promise<GuardAnswer | null | typeof UNKNOWN> {
     return guard(
       { session, token, input, direct },
       {
@@ -2257,7 +2275,7 @@ export class Runs {
         startedOf: (one) => this.startedOf(one),
         host: (asked) => (this.options.place ?? hostPlace)(asked),
         kitOf: (one) => this.kitOf(one),
-        keptGuards: (one) => this.guardsKept.get(one) ?? null,
+        keptGuards: (one) => this.keptGuards(one),
         toldFile: (one) => this.toldFileOf(one),
         keepGuards: (one, guards) => this.keepGuards(one, guards),
       },
@@ -2526,7 +2544,7 @@ export class Runs {
     if (kit && token) hooks.push({ event: 'post_tool', matcher: '*', commands: [{ command: `/bin/sh ${quoted(contextScriptIn(kit.dir))} PostToolUse`, timeout: 10 }] })
     /* Every shell command, the session's own and its subagents', held to the guards of the modules placed on its
        kehikko, and each subagent's brief given its notes (protocol 2.61.0; see guard.sh). */
-    if (kit && token) hooks.push({ event: 'pre_tool', matcher: GUARD_MATCH, commands: [{ command: `/bin/sh ${quoted(guardScriptIn(kit.dir))} PreToolUse`, timeout: 5 }] })
+    if (kit && token) hooks.push({ event: 'pre_tool', matcher: GUARD_MATCH, commands: [{ command: `/bin/sh ${quoted(guardScriptIn(kit.dir))} PreToolUse`, timeout: GUARD_TIMEOUT }] })
     if (kit) {
       writeHooks(kit.dir, this.program.hooksFile(hooks))
       /* What it is told at its start (context.ts): in the folder's AGENTS.md, read by Vibe into a new

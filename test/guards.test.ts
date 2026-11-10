@@ -8,7 +8,7 @@ import { join } from 'node:path'
 
 import type { PlacedGuard } from 'kehikot-module-protocol'
 
-import { GUARD_MATCH, GUARDS_FRESH_MS, SPAWN_SAID, guard, guardAnswer, spawnAnswer, type GuardNeeds } from '../context.ts'
+import { GUARD_MATCH, GUARDS_FRESH_MS, HANDED_OFF, SPAWN_SAID, guard, guardAnswer, handedOff, spawnAnswer, type GuardNeeds } from '../context.ts'
 import { hostPlace, type DoorsAsked, type HostPlace } from '../doorConfig.ts'
 import { PROGRAM } from '../program.ts'
 import { hooksFileIn, sessionKit } from '../skills.ts'
@@ -49,10 +49,23 @@ describe('what a shell command becomes', () => {
   test('a guarded command is rewritten: the whole input back with only the command changed, the words shown to the person', () => {
     const said = guardAnswer(bash('bun test --watch'), [QUEUE])
     expect(said).toEqual({
-      hook_specific_output: { tool_input: { command: "kehikot-queue run -- sh -c 'bun test --watch'", timeout: 60 } },
+      /* Handed off: the bash tool waits for its command, so the queue returns at once and tells this session. */
+      hook_specific_output: { tool_input: { command: "KEHIKOT_DETACH=1 kehikot-queue run -- sh -c 'bun test --watch'", timeout: 60 } },
       system_message: expect.stringContaining('Queue (a module on this kehikko) ran this command through its own instead (guard heavy)'),
     })
     expect(JSON.stringify(said).startsWith('{"hook_specific_output":{"tool_input":')).toBe(true)
+    expect((said as { system_message: string }).system_message).toEndWith(HANDED_OFF)
+    expect(HANDED_OFF).toContain("you'll be notified here when it finishes")
+    /* With the session's place token, the queue knows whom to tell. */
+    expect(guardAnswer(bash('bun test'), [QUEUE], false, TOKEN)).toMatchObject({ hook_specific_output: { tool_input: { command: `KEHIKOT_DETACH=1 KEHIKOT_PLACE=${TOKEN} kehikot-queue run -- sh -c 'bun test'` } } })
+  })
+
+  test('a handed-off command runs in a shell with the hand-off and the place said to the command it runs, and nothing else changed', () => {
+    const run = Bun.spawnSync(['sh', '-c', handedOff(`sh -c 'echo "$KEHIKOT_DETACH:$KEHIKOT_PLACE:$1"' - 'it'\\''s'`, TOKEN)])
+    expect(run.stdout.toString()).toBe(`1:${TOKEN}:it's\n`)
+    /* A token that is not one is left out; the hand-off is still asked. */
+    expect(handedOff('x', 'no; rm -rf /')).toBe('KEHIKOT_DETACH=1 x')
+    expect(handedOff('x', null)).toBe('KEHIKOT_DETACH=1 x')
   })
 
   test('a denied command is refused with the module’s words, which Vibe hands the model as the tool’s error', () => {

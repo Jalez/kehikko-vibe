@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { WELL_KNOWN, missingNeeds, moduleSkillsSchema, needSaid, skillPath, skillTextIssue, type EverywhereSkill, type KehikkoSkill, type ModuleSkill, type ProvidingManifest } from 'kehikot-module-protocol'
@@ -224,6 +224,8 @@ export interface GatherOptions {
    * each written as it is, before any module's, so a name the person chose is theirs.
    */
   kehikkoSkills?: readonly KehikkoSkill[] | null
+  /** What `context.sh` tells the agent after a call ran unguarded (`unguardedHook`): written beside the token. Absent: the script's own words. */
+  unguarded?: string | null
 }
 
 /** One skill of a session, as its context lists it. */
@@ -425,7 +427,10 @@ export async function sessionKit(doors: readonly SessionDoor[], options: GatherO
   mkdirSync(join(dir, 'kehikot'), { mode: 0o700 })
   writeFileSync(join(dir, 'kehikot', 'pid'), String(process.pid), { mode: 0o600 })
   writeFileSync(join(dir, 'kehikot', 'skills.json'), JSON.stringify(skills), { mode: 0o600 })
-  if (options.token && PLACE_TOKEN.test(options.token)) writeContextHook(dir, options.token, options.registration ?? join(registryDir(), `${ID}.json`), stableAddress(doors, ID))
+  if (options.token && PLACE_TOKEN.test(options.token)) {
+    writeContextHook(dir, options.token, options.registration ?? join(registryDir(), `${ID}.json`), stableAddress(doors, ID))
+    if (options.unguarded) writeUnguarded(dir, options.unguarded)
+  }
   return { dir, skills }
 }
 
@@ -507,6 +512,26 @@ export const notesFileIn = (dir: string): string => join(dir, 'AGENTS.md')
 
 /** Where a session's hooks are in its folder. */
 export const hooksFileIn = (dir: string): string => join(dir, '.vibe', 'hooks.toml')
+
+/** Where a session's folder keeps what `context.sh` tells the agent after a call ran unguarded. */
+export const UNGUARDED_FILE = join('kehikot', 'unguarded-says')
+
+/**
+ * Write what `context.sh` tells the agent after a call ran unguarded into a session's folder, 0600,
+ * beside its token — at its start and again whenever the work queue the host names changes. A folder
+ * without its `kehikot/` is not a session's and is left alone. Never throws: false says it was not written.
+ */
+export function writeUnguarded(dir: string, line: string): boolean {
+  try {
+    const file = join(dir, UNGUARDED_FILE)
+    const temporary = `${file}.${process.pid}.tmp`
+    writeFileSync(temporary, line, { mode: 0o600 })
+    renameSync(temporary, file)
+    return true
+  } catch {
+    return false
+  }
+}
 
 function writeContextHook(dir: string, token: string, registration: string, stable: string | null): void {
   writeFileSync(join(dir, 'context.sh'), readFileSync(CONTEXT_SCRIPT), { mode: 0o700 })

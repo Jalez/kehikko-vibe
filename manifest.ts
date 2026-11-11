@@ -148,7 +148,7 @@ export const MANIFEST: Manifest = manifestSchema.parse({
   extensions: { emits: [NOTICES], consumes: [] },
   reacts: ['parts'],
   /* Another module may ask for one of a place's conversations to be shown (`view.goto { show }`,
-     protocol 2.28.0): Queue, going to the session that queued a run. See `showStep`. */
+     protocol 2.28.0): a work queue, going to the session that queued a run. See `showStep`. */
   shows: ['agent-session'],
   /* The protocol's turn events (2.55.0, `TURN_EVENTS`): "Research complete" (2.31.0, a case of `done`),
      and the `attention` ones a turn's end can be. An older host ignores them. See events.ts and research.ts. */
@@ -162,7 +162,7 @@ export const MANIFEST: Manifest = manifestSchema.parse({
   reveal: 'over',
   declares: {
     protocol: `>=${PROTOCOL} <${PROTOCOL + 1}`,
-    uses: ['events:emit', 'activity:report', 'agents:message', 'view:expand', 'state:keep'],
+    uses: ['events:emit', 'activity:report', 'agents:message', 'view:expand', 'state:keep', 'services:read'],
     agentSessions: { loadsSkills: true, installsSkills: true },
     storage: true,
     prompt: false,

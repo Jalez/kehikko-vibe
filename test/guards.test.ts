@@ -200,13 +200,13 @@ describe('the host’s answer', () => {
 })
 
 describe('the session’s hooks file', () => {
-  test('a pre_tool hook on exactly the shell, background and spawn tools, failing open', () => {
+  test('a pre_tool hook on exactly the shell, background, file and spawn tools, failing open', () => {
     const text = PROGRAM.hooksFile([{ event: 'pre_tool', matcher: GUARD_MATCH, commands: [{ command: '/bin/sh "/k/guard.sh" PreToolUse', timeout: 5 }] }])
     expect(text).toContain('type = "pre_tool"')
-    expect(text).toContain('match = "re:file_system\\\\.bash|process\\\\.start|agents\\\\.spawn"')
+    expect(text).toContain('match = "re:file_system\\\\.bash|process\\\\.start|file_system\\\\.write_file|file_system\\\\.edit|file_system\\\\.search_replace|agents\\\\.spawn"')
     expect(text).not.toContain('strict')
     const pattern = new RegExp(`^(?:${GUARD_MATCH.slice(3)})$`, 'i')
-    for (const name of ['file_system.bash', 'process.start', 'agents.spawn']) expect(pattern.test(name)).toBe(true)
+    for (const name of ['file_system.bash', 'process.start', 'file_system.write_file', 'file_system.edit', 'file_system.search_replace', 'agents.spawn']) expect(pattern.test(name)).toBe(true)
     for (const name of ['bash', 'mcp_x.bash', 'file_system.read_file', 'agents.send_message']) expect(pattern.test(name)).toBe(false)
   })
 })

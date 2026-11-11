@@ -9,8 +9,8 @@
 #
 #   /bin/sh guard.sh PreToolUse
 #
-# A `pre_tool` hook of the session's own `.vibe/hooks.toml` (matching `file_system.bash`,
-# `process.start` and `agents.spawn`; see `GUARD_MATCH` in context.ts), copied into the session's
+# A `pre_tool` hook of the session's own `.vibe/hooks.toml` (matching the tools the protocol's table
+# lists for Vibe, shell and file tools, and `agents.spawn`; see `GUARD_MATCH` in context.ts), copied into the session's
 # folder beside context.sh and the same `kehikot/token`, `kehikot/stable`, `kehikot/origin` and
 # `kehikot/registration`.
 # Subagents inherit the session's hooks (docs: "Hooks"), so their commands are held too.

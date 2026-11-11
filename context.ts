@@ -1,7 +1,9 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { doorCarriesPlace, guardDecision, guardSays, researchLine, sessionNotes, subagentNotes, type NotesPlace, type NotesTold, type PlacedGuard } from 'kehikot-module-protocol'
+import { checkToolCall, checkoutOf } from 'kehikot-module-protocol/serve'
+import { CLI_TOOLS, doorCarriesPlace, guardSays, toolReading, researchLine, sessionNotes, subagentNotes, type NotesPlace, type NotesTold, type PlacedGuard } from 'kehikot-module-protocol'
 
 import type { DoorsAsked, HostPlace } from './doorConfig.ts'
 import { ID } from './manifest.ts'
@@ -380,14 +382,32 @@ export const RECONNECT = 'Vibe reaches the tools again by itself once Kehikot is
  * ------------------------------------------------------------------------ */
 
 /**
- * The tools the pre-tool hook is given for (`GUARD_MATCH`, Vibe's qualified names, docs "Hooks",
- * `pre_tool`): the shell tool, a command started in the background (which `bash` does not catch), and
- * a subagent's start. Subagents inherit the session's hooks, so their commands are held too.
+ * Tools the module treats on its own (Vibe's qualified names, docs "Hooks", `pre_tool`): the shell
+ * tool, a command started in the background (which `bash` does not catch, and whose rewrite is not
+ * handed off), and a subagent's start. Subagents inherit the session's hooks, so their calls are held too.
  */
 export const GUARD_TOOLS = { shell: 'file_system.bash', background: 'process.start', spawn: 'agents.spawn' } as const
 
-/** The `match` of the pre-tool hook: exactly those three tools, by qualified name. */
-export const GUARD_MATCH = 're:file_system\\.bash|process\\.start|agents\\.spawn'
+/** This CLI's name in the protocol's table of agent CLIs' tools. */
+export const CLI = 'vibe'
+
+/**
+ * The `match` of the pre-tool hook, by qualified name: every Vibe tool the protocol's table says a guard
+ * kind holds (`CLI_TOOLS.vibe`: the shell tool, a background start and the file tools, at protocol
+ * 2.80.0), and a subagent's start. A tool the table gains later is hooked on the next protocol pin.
+ */
+export const GUARD_MATCH = `re:${[...Object.keys(CLI_TOOLS[CLI]), GUARD_TOOLS.spawn].map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')}`
+
+/** What the answer reads of this computer: the home folder for `~/` patterns, and which kind of git checkout a file is in (`checkoutOf`). */
+export interface EditFiles {
+  home: string | null
+  checkoutOf(path: string): 'main' | 'linked' | null
+}
+
+export const EDIT_FILES: EditFiles = {
+  home: homedir(), // kehikot-storage: allow read-only: the home folder an edit guard's ~/ patterns name
+  checkoutOf: (path) => checkoutOf(path),
+}
 
 /** How long the guards kept for a session are used before the host is asked again. */
 export const GUARDS_FRESH_MS = 30_000
@@ -413,28 +433,28 @@ const toolOf = (input: unknown): { name: string; args: Record<string, unknown> }
 }
 
 /**
- * THE ANSWER to one shell command, from Vibe's `pre_tool` input and the session's guards: pure. A
- * rewrite gives the WHOLE input back with only `command` changed, and nothing about permission, so
+ * THE ANSWER to one tool call, from Vibe's `pre_tool` input and the session's guards: pure but for what
+ * `files` reads. Every call goes through the protocol's one check (`checkToolCall`, protocol 2.80.0),
+ * which applies every guard kind the placed modules declare to whichever of Vibe's tools it holds
+ * (`CLI_TOOLS.vibe`): a shell guard to `file_system.bash` and `process.start` (with a background
+ * command's own `env`), an edit guard to the file `file_system.write_file`, `file_system.edit` or
+ * `file_system.search_replace` writes (a relative path read against the hook's `cwd`).
+ *
+ * A rewrite gives the WHOLE input back with only `command` changed, and nothing about permission, so
  * the person's approval rules judge the command that will run. A deny refuses with the module's words
- * (`guardSays`). Null: run it as written — another tool, no command, no guard, or `direct`
- * (KEHIKOT_DIRECT in the session's environment, or in a background command's own `env`). A rewritten
+ * (`guardSays`). Null: run it as written — a tool no guard holds, no guard, or `direct` (KEHIKOT_DIRECT
+ * in the session's environment, or in a background command's own `env`). A rewritten
  * `file_system.bash` command is handed off (`handedOff`); `process.start` already runs in the background.
  */
-export function guardAnswer(input: unknown, guards: readonly PlacedGuard[], direct = false, token: string | null = null): GuardAnswer | null {
+export function guardAnswer(input: unknown, guards: readonly PlacedGuard[], direct = false, token: string | null = null, files: EditFiles = EDIT_FILES): GuardAnswer | null {
   const tool = toolOf(input)
-  if (!tool || (tool.name !== GUARD_TOOLS.shell && tool.name !== GUARD_TOOLS.background)) return null
-  if (typeof tool.args.command !== 'string') return null
-  const env: Record<string, string> = {}
-  const own = tool.args.env
-  if (tool.name === GUARD_TOOLS.background && own && typeof own === 'object' && !Array.isArray(own)) {
-    for (const [name, value] of Object.entries(own)) if (typeof value === 'string') env[name] = value
-  }
-  if (direct) env.KEHIKOT_DIRECT = '1'
-  const decision = guardDecision(guards, tool.args.command, { tool: 'shell', env })
+  if (!tool) return null
+  const cwd = (input as { cwd?: unknown }).cwd
+  const decision = checkToolCall({ cli: CLI, tool: tool.name, input: tool.args, cwd: typeof cwd === 'string' ? cwd : null }, guards, { home: files.home, checkoutOf: files.checkoutOf, env: direct ? { KEHIKOT_DIRECT: '1' } : {} })
   if (decision.action === 'pass') return null
   if (decision.action === 'deny') return { decision: 'deny', reason: guardSays(decision) }
-  if (tool.name === GUARD_TOOLS.background) return { hook_specific_output: { tool_input: { ...tool.args, command: decision.command } }, system_message: guardSays(decision) }
-  return { hook_specific_output: { tool_input: { ...tool.args, command: handedOff(decision.command, token) } }, system_message: `${guardSays(decision)} ${HANDED_OFF}` }
+  if (tool.name === GUARD_TOOLS.background) return { hook_specific_output: { tool_input: { ...tool.args, [decision.field]: decision.command } }, system_message: guardSays(decision) }
+  return { hook_specific_output: { tool_input: { ...tool.args, [decision.field]: handedOff(decision.command, token) } }, system_message: `${guardSays(decision)} ${HANDED_OFF}` }
 }
 
 /**
@@ -482,7 +502,7 @@ export async function guard(asked: { session: string; token: string | null; inpu
   const { session, token } = asked
   if (!needs.program.isId(session) || !token || !PLACE_TOKEN.test(token)) return null
   const tool = toolOf(asked.input)
-  if (!tool || !Object.values(GUARD_TOOLS).includes(tool.name as never)) return null
+  if (!tool || (tool.name !== GUARD_TOOLS.spawn && !toolReading(CLI, tool.name))) return null
   const started = needs.startedOf(token)
   const root = started ? projectRoot(started.projectPath) : null
   const where = started && root?.ok ? { projectPath: root.value, ...whereNow(root.value, started, session) } : null

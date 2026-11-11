@@ -22,7 +22,8 @@ and cannot do here.
   (`readiness`), the first `idle` before any turn included. Vibe has no command that lists processes
   or their state (README, "Verified against vibe 3.0.4"); never write one in.
 - **Guards** (protocol 2.61.0) are the `pre_tool` hook (`guard.sh` → `/api/guard` → `guard` in
-  context.ts), decided only by the protocol's `guardDecision`; the words are `guardSays` and
+  context.ts), every call decided only by the protocol's `checkToolCall` (2.80.0: every guard kind, the
+  tools from its `CLI_TOOLS.vibe`; never pick tools or kinds here); the words are `guardSays` and
   `subagentNotes`. It fails open: any doubt is an empty answer, and the hook is never `strict` — except that Kehikot not answering (a restart) is waited out for up to 20 s first (guard.sh; `UNKNOWN` → 503), then said (restarted.ts).
 - **Vibe's records are read, never written**: `<save_dir>/unified/<id>/CURRENT` and the generation's
   `projection-state.json` (title, preview, cwd, model, `context_usage`), and the leases in

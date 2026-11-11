@@ -24,8 +24,8 @@
 #   - It speaks only to this computer: the origin is checked to be loopback,
 #     and no proxy is used.
 #   - After guard.sh let a tool run without the guards because Kehikot did not answer
-#     (`kehikot/unguarded`), the agent is told so here, with how to queue heavy work
-#     itself, and the marker goes: a `pre_tool` hook of Vibe's cannot tell the model.
+#     (`kehikot/unguarded`), the agent is told so here — with how to hand heavy work to
+#     the work queue, in its words, when one is provided (`kehikot/unguarded-says`) — and the marker goes: a `pre_tool` hook of Vibe's cannot tell the model.
 #   - It never holds the session up for long and never fails it: four seconds
 #     at most, every outcome is exit 0, and anything that is not this module's
 #     answer is nothing.
@@ -50,8 +50,11 @@ session=$(printf '%s' "$input" | "$sed" -n 's/.*"session_id" *: *"\([0-9a-f-]\{3
 parent=$(printf '%s' "$input" | "$sed" -n 's/.*"parent_session_id" *: *"\([0-9a-f-]\{36\}\)".*/\1/p')
 case $session in '' | *[!0-9a-f-]*) exit 0 ;; esac
 
-# What the agent is told after a tool guard.sh let through unguarded (see guard.sh).
-unguarded='Kehikot did not answer (it may be restarting), so that tool call ran without the guards of the modules on your kehikko. Until it is back, run heavy work (tests, typechecks, builds, big installs) through Queue yourself: its CLI, the kehikot-queue program its wait lines name, run as `kehikot-queue run -- <command>` in the background, waits for Queue to come back and exits with the exit code of the command.'
+# What the agent is told after a tool guard.sh let through unguarded (see guard.sh): this module's words beside the
+# token (`kehikot/unguarded-says`, escaped for a JSON string, from the work queue Kehikot names), else only that it ran
+# unguarded.
+unguarded=$(/usr/bin/head -c 8192 "$here/unguarded-says" 2>/dev/null | /usr/bin/tr -d '\n\r')
+[ -n "$unguarded" ] || unguarded='Kehikot did not answer (it may be restarting), so that tool call ran without the guards of the modules on your kehikko.'
 note=
 if [ -f "$here/unguarded" ]; then
   /bin/rm -f "$here/unguarded"

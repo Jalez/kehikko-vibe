@@ -19,13 +19,14 @@ import { isKehikkoKey, kehikkoOf, placeKey, sortedParts, type Kehikko } from './
 import { cutOffs, cutOffWords, lastPrompt, midTurn, type CutOff } from './cutoff.ts'
 import { PROGRAM, TELLS, headOf, home, learnSession, recordFile, sessionName, type Active, type ActiveStatus, type HookGroup, type Program, type Running, type State } from './program.ts'
 import { PLACE_TOKEN, assign, attach, born, byToken, follow, homeOf, isDetached, markSession, markSessions, note, projectRoot, readPlaces, readSettings, recordedIds, sighted, stayDetached, tokenFor, type NamedPlace, type PlaceEntry, type Places, type SessionEntry } from './record.ts'
-import { GUARD_TIMEOUT, contextScriptIn, guardScriptIn, removeKit, sessionKit, sweepKits, writeHooks, writeNotes } from './skills.ts'
+import { GUARD_TIMEOUT, contextScriptIn, guardScriptIn, removeKit, sessionKit, sweepKits, writeHooks, writeNotes, writeUnguarded } from './skills.ts'
+import { WorkQueueLookup, askedProviders, type FindProviders } from './workQueue.ts'
 import { sessionEnv, sessionFlags } from './settings.ts'
 import { REPLY, StatusReader, type Report } from './status.ts'
-import { doorEnv, freshToken, hostDoors, withOwnDoor, hostPlace, type DoorsAsked, type HostPlace, type SessionDoor } from './doorConfig.ts'
+import { configDirOf, doorEnv, freshToken, hostDoors, withOwnDoor, hostPlace, type DoorsAsked, type HostPlace, type SessionDoor } from './doorConfig.ts'
 import { readPlaceKey } from './place.ts'
 import { AGENT_ID, AGENT_TYPE, FOUND_MOST, isResearch, subagentTask, type Found, type Told } from './research.ts'
-import { GUARD_MATCH, UNKNOWN, context, guard, startText, toldWords, type GuardAnswer, type HookAnswer, type Said, type Started } from './context.ts'
+import { GUARD_MATCH, UNKNOWN, context, guard, startText, toldWords, unguardedHook, type GuardAnswer, type HookAnswer, type Said, type Started } from './context.ts'
 import type { PlacedGuard } from 'kehikot-module-protocol'
 import { ID } from './manifest.ts'
 import { readKeptGuards, writeKeptGuards } from './restarted.ts'
@@ -1181,6 +1182,8 @@ export interface RunsOptions {
   fetch?: typeof fetch
   /** Where a session's folder (its kit, skills.ts) is made; this user's temporary folder by default. */
   configBase?: string
+  /** Asks the host who provides the work queue (`askedProviders`, protocol 2.81.0); a test stands one in. Absent: none is provided. */
+  services?: FindProviders
 }
 
 /**
@@ -1191,6 +1194,8 @@ export class Runs {
   readonly runs = new Map<string, Run>()
   /** The guards the host last handed for each session token (protocol 2.61.0), for its pre-tool hook. In memory: a restart asks again. */
   private readonly guardsKept = new Map<string, { at: number; guards: PlacedGuard[] }>()
+  /** The work queue the host names (workQueue.ts): what a session is told about handing it heavy work, in its own words. */
+  readonly workQueue: WorkQueueLookup
   private readonly program: Program
   private readonly grace: number
   private readonly quiet: number
@@ -1269,6 +1274,12 @@ export class Runs {
     this.watchEvery = options.watchEvery === undefined ? WATCH_EVERY : options.watchEvery
     const meterEvery = options.meterEvery === undefined ? METER_EVERY : options.meterEvery
     if (meterEvery !== null) setInterval(() => this.meters(), meterEvery).unref?.()
+    this.workQueue = new WorkQueueLookup(options.services ?? (async () => []), options.services ? join(configDirOf(options.configBase), 'work-queue.json') : null, this.now)
+    /* What a running session's guard hook says when Kehikot is away follows the work queue now named. */
+    this.workQueue.onChange((queue) => {
+      const line = unguardedHook(queue)
+      for (const run of this.runs.values()) if (run.plugin && !run.ended) writeUnguarded(run.plugin, line)
+    })
   }
 
   /** Whether an asking about background sessions is due or under way. */
@@ -2236,6 +2247,7 @@ export class Runs {
       later: (run, ms) => setTimeout(run, ms).unref?.(),
       keepGuards: (one, guards) => this.keepGuards(one, guards, kit),
       keptGuards: (one) => this.keptGuards(one, kit),
+      workQueue: () => this.workQueue.fresh(),
     }
   }
 
@@ -2535,7 +2547,7 @@ export class Runs {
     /* Its folder, given with `--add-dir`: the skills the person wrote for the kehikko and those of every module on it, its hooks, its
        context hook and its notes, for this one process, removed with it (skills.ts). Only for a copy
        that takes `--add-dir`. */
-    const kit = able.plugins ? await sessionKit(doors, { base: this.options.configBase, fetch: this.options.fetch, log: this.log, token, present, everywhere, kehikkoSkills, projectPath }).catch((error: unknown) => {
+    const kit = able.plugins ? await sessionKit(doors, { base: this.options.configBase, fetch: this.options.fetch, log: this.log, token, present, everywhere, kehikkoSkills, projectPath, unguarded: unguardedHook(await this.workQueue.fresh()) }).catch((error: unknown) => {
       this.log(`vibe: the session's folder could not be written — ${error instanceof Error ? error.message : String(error)}`)
       return null
     }) : null
@@ -3520,6 +3532,7 @@ export function theRuns(log: (line: string) => void = () => {}): Runs {
       return spawnPty(file, args, { name: TERM, ...options })
     },
     screen: headless,
+    services: askedProviders(ID),
   })
   held[HELD] = runs
   /* A message to a session idle at its prompt wakes it (protocol 2.43.0): the protocol's rule, typed through `wake`. */

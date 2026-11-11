@@ -29,7 +29,7 @@
 #     to the queue once Kehikot is back. Only then does the tool run as asked: the person is shown
 #     that it ran unguarded (`system_message`), and `kehikot/unguarded` is left for context.sh, whose
 #     `post_tool` answer is what the model reads — a `pre_tool` hook of Vibe's has no words for the
-#     model on an allowed call — to tell the agent and how to queue heavy work itself. While Kehikot
+#     model on an allowed call — to tell the agent and, when a work queue is provided, how to hand it heavy work. While Kehikot
 #     stays away (`kehikot/away`, five minutes) the next calls ask once and do not wait again.
 #   - Every outcome is exit 0 (Vibe runs a failed, non-strict pre_tool hook as an allow), and an
 #     answer that is not this module's is nothing — the tool then runs as asked.

@@ -6,7 +6,11 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import type { WorkQueue } from 'kehikot-module-protocol'
+
+import { unguardedHook } from '../context.ts'
 import { sessionKit } from '../skills.ts'
+import { unguardedSaid } from '../workQueue.ts'
 
 /**
  * `context.sh`, run for real from a session's plugin against a server that writes down what it was
@@ -48,10 +52,10 @@ afterAll(() => {
 })
 
 /** A session's folder, as this module assembles it, for `token`, with the origin it was given rewritten. */
-async function plugin(options: { origin?: string; registration?: string } = {}): Promise<string> {
+async function plugin(options: { origin?: string; registration?: string; unguarded?: string } = {}): Promise<string> {
   const base = mkdtempSync(join(scratch, 'base-'))
   const registration = options.registration ?? join(scratch, 'no-registration.json')
-  const dir = (await sessionKit([], { base, personal: [], token: TOKEN, registration })).dir
+  const dir = (await sessionKit([], { base, personal: [], token: TOKEN, registration, unguarded: options.unguarded })).dir
   writeFileSync(join(dir, 'kehikot', 'origin'), options.origin ?? origin)
   return dir
 }
@@ -156,14 +160,14 @@ describe('context.sh, from a session’s own folder', () => {
       expect(heard.map((one) => one.url)).toEqual([`/api/context?event=PostToolUse&session=${SESSION}`])
     })
 
-    test('after guard.sh let a tool through unguarded, the agent is told so and how to queue — alone while nobody answers, before what the module says once it does — and once', async () => {
+    test('after guard.sh let a tool through unguarded, the agent is told so — alone while nobody answers, before what the module says once it does — and once', async () => {
       const dir = await plugin({ origin: await deadUrl() })
       writeFileSync(join(dir, 'kehikot', 'unguarded'), '')
       const alone = await ran(dir, 'PostToolUse', hookInput('PostToolUse'))
       expect(alone.code).toBe(0)
       const told = JSON.parse(alone.out).hook_specific_output.additional_context as string
       expect(told).toContain('ran without the guards')
-      expect(told).toContain('`kehikot-queue run -- <command>`')
+      expect(told).not.toMatch(/queue/i)
       expect(existsSync(join(dir, 'kehikot', 'unguarded'))).toBe(false)
       expect((await ran(dir, 'PostToolUse', hookInput('PostToolUse'))).out).toBe('')
       /* The module back: its answer follows the note, in one answer. */
@@ -179,6 +183,15 @@ describe('context.sh, from a session’s own folder', () => {
       const sub = await ran(dir, 'PostToolUse', JSON.stringify({ session_id: SESSION, parent_session_id: '22222222-2222-4222-8222-222222222222' }))
       expect(JSON.parse(sub.out).hook_specific_output.additional_context).toBe(told)
       expect(heard).toHaveLength(0)
+    })
+
+    test('after guard.sh let a tool through unguarded, with a work queue named: the agent is told how to hand it heavy work, in its descriptor’s words', async () => {
+      const queue: WorkQueue = { name: 'Lane "Keeper"', run: { test: "'/opt/lane' take -- {command}" }, marks: [] }
+      const dir = await plugin({ origin: await deadUrl(), unguarded: unguardedHook(queue) })
+      writeFileSync(join(dir, 'kehikot', 'unguarded'), '')
+      const told = JSON.parse((await ran(dir, 'PostToolUse', hookInput('PostToolUse'))).out).hook_specific_output.additional_context as string
+      expect(told).toBe(unguardedSaid(queue, 'that tool call'))
+      expect(told).toContain("through Lane \"Keeper\" yourself: `'/opt/lane' take -- <command>`")
     })
   })
 })

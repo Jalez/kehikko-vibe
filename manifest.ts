@@ -169,4 +169,11 @@ export const MANIFEST: Manifest = manifestSchema.parse({
     settings: SETTINGS,
   },
   health: '/healthz',
+  /* What Kehikot itself calls when a person adopts an item that belongs to no epic (protocol 2.88.0,
+     services.ts): which Vibe conversations worked on it, filing one under a place, and a new
+     conversation fed a brief. Each route answers only the host's server. */
+  services: {
+    'conversations.finder': { name: 'Vibe', program: 'Mistral Vibe', find: '/api/conversations/find', bring: '/api/conversations/bring' },
+    'agent.tasks': { name: 'Vibe', program: 'Mistral Vibe', start: '/api/tasks/start', view: '/app?session={session}' },
+  },
 })

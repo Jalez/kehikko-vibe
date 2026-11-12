@@ -59,10 +59,23 @@ export interface Api {
    * server keeps it only while a feed is open. Returns the function that
    * stops following.
    */
+  /** One conversation on its own (`/app?session=…`): its project and place, from the server, since no host greets the page. */
+  standalone?(session: string): Promise<Standalone>
   feed?(notices: boolean, heard: { state(stated: Stated): void; notice(notice: Notice): void; activity?(items: ActivityRow[]): void; sessions?(event?: SessionsChanged): void; context?(said: Metered): void; attached?(): void }, project?: string | null, page?: string): () => void
 }
 
+/** What `/api/standalone` answers: where a conversation shown on its own is. */
+export interface Standalone {
+  projectPath: string
+  projectId: string | null
+  place: { epic: string | null; parts: string[]; kehikko: { key: string } | { id: number } | null; kehikkoName?: string }
+  session: string
+}
+
 export const api: Api = {
+  async standalone(session) {
+    return answered(await ask<Standalone & { ok: true }>('./api/standalone', { query: { session }, ticket: true }))
+  },
   async place(projectPath, key, projectId) {
     return answered(await ask<Listing>('./api/place', { query: { projectPath, key, ...(projectId ? { projectId } : {}) }, ticket: true }))
   },

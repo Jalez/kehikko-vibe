@@ -5,6 +5,7 @@ import { originFor } from 'kehikot-module-protocol/serve'
 import { BUILD, MANIFEST, MOST_READ, TICKET, answer, ours, servingAt, stream } from './doors.ts'
 import { sessionSockets, theRuns } from './live.ts'
 import { ID, PREFERRED_PORT } from './manifest.ts'
+import { serviceDoor } from './services.ts'
 
 /**
  * This module over its BUILT page (`bun run build`), on the same doors, the
@@ -37,6 +38,8 @@ const running = await run({
   maxBodyBytes: MOST_READ,
   ours,
   sockets: sessions.sockets,
+  /* The services Kehikot itself calls (services.ts): they need the request's headers. */
+  before: serviceDoor(),
   /* A view ends with this process; a conversation run in the background does not (`endAll`). */
   onStop: () => theRuns(log).endAll(),
 })

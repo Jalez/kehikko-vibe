@@ -1,18 +1,15 @@
-# Typecheck and test every push to main and every pull request: the same two
-# checks the release workflow runs before it publishes anything.
 name: ci
 
 on:
+  pull_request:
   push:
     branches: [main]
-  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
-      - run: bun run typecheck
-      - run: bun run test
+  ci:
+    uses: Jalez/kehikko-desktop/.github/workflows/module-ci.yml@main
+    with:
+      runners: '["ubuntu-latest","macos-latest"]'

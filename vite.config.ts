@@ -2,12 +2,13 @@ import { resolve } from 'node:path'
 
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
-import { doors, originFor, serves } from 'kehikot-module-protocol/serve'
+import { beforeDoors, doors, originFor, serves } from 'kehikot-module-protocol/serve'
 import { defineConfig, type Plugin } from 'vite'
 
 import { BUILD, MANIFEST, MOST_READ, TICKET, answer, ours, servingAt, stream } from './doors.ts'
 import { serveSessions } from './live.ts'
 import { ID, PREFERRED_PORT } from './manifest.ts'
+import { serviceDoor } from './services.ts'
 
 /**
  * The port this process actually ended up on, which is not knowable here:
@@ -64,6 +65,8 @@ export default defineConfig({
   plugins: [
     serves({ id: ID, prefer: PREFERRED_PORT }),
     sockets(),
+    /* The services Kehikot itself calls (services.ts), before the doors: they need the request's headers. */
+    beforeDoors(serviceDoor(), { name: 'vibe-services' }),
     doors({ manifest: MANIFEST, answer, stream, build: BUILD, page: { title: 'Vibe', ticket: TICKET }, maxBodyBytes: MOST_READ, ours }),
     react(),
     tailwindcss(),

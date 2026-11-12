@@ -10,7 +10,7 @@ import type { Command, Elsewhere } from '../live.ts'
 import type { Context } from '../meter.ts'
 import { ID, NOTICES } from '../manifest.ts'
 import type { State } from '../program.ts'
-import { api as realApi, type Api } from './api.ts'
+import { api as realApi, type Api, type Standalone } from './api.ts'
 import { NoConversationBar } from './view/bar.tsx'
 import { ToldPanel } from './view/told.tsx'
 import type { Told } from './api.ts'
@@ -121,7 +121,70 @@ export function holdsActivity(answers: readonly string[] | null | undefined): bo
   return Array.isArray(answers) && answers.includes('activity.set')
 }
 
+/**
+ * The page. `/app?session=<id>` (the `agent.tasks` view, protocol 2.88.0) is that one conversation
+ * on its own — Kehikot frames it in a dialog of its own while a task runs, with no greeting — and
+ * everything else is the page a host frames on a kehikko.
+ */
 export function App() {
+  const solo = useMemo(() => soloSession(typeof location === 'undefined' ? '' : location.search), [])
+  return solo ? <Solo session={solo} /> : <Framed />
+}
+
+/** The conversation `/app?session=…` asks for, or null for the framed page. */
+export function soloSession(search: string): string | null {
+  const id = new URLSearchParams(search).get('session')?.trim() ?? ''
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ? id.toLowerCase() : null
+}
+
+/**
+ * One conversation, its terminal and nothing else. Where it is (its project and place) is the
+ * server's to say (`/api/standalone`): a page framed in a dialog has no host's greeting to say it.
+ * A greeting that does come gives the theme; nothing waits for one.
+ */
+export function Solo({ session, api = realApi }: { session: string; api?: Pick<Api, 'standalone'> }) {
+  const host = useHost(ID, {})
+  const [found, setFound] = useState<Standalone | string | null>(null)
+  useEffect(() => {
+    let live = true
+    if (!api.standalone) {
+      setFound('This page cannot show one conversation on its own.')
+      return
+    }
+    api.standalone(session).then(
+      (value) => live && setFound(value),
+      (error: unknown) => live && setFound(error instanceof Error ? error.message : String(error)),
+    )
+    return () => {
+      live = false
+    }
+  }, [session, api])
+  if (found === null || typeof found === 'string') {
+    return (
+      <div className="flex h-full w-full items-center justify-center p-4 text-sm text-muted-foreground" data-solo={session}>
+        {found ?? 'Opening the conversation…'}
+      </div>
+    )
+  }
+  return (
+    <div className="h-full w-full" data-solo={session}>
+      <TerminalView
+        theme={host.theme}
+        target={{
+          what: 'session',
+          projectPath: found.projectPath,
+          ...(found.projectId ? { projectId: found.projectId } : {}),
+          place: { epic: found.place.epic, parts: found.place.parts, kehikko: found.place.kehikko, kehikkoName: found.place.kehikkoName ?? '' },
+          session: found.session,
+        }}
+        shown
+        onDrawn={host.ready}
+      />
+    </div>
+  )
+}
+
+function Framed() {
   const presses = useRef<Press | null>(null)
   /** The search of the session on screen, for the host's find bar (`TerminalView`). */
   const finder = useMemo(findSlot, [])

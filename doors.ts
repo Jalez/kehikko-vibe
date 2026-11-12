@@ -822,6 +822,15 @@ export async function answer(
     return ok({ ok: true, told: said })
   }
 
+  /* One conversation on its own (`/app?session=…`, the `agent.tasks` view, protocol 2.88.0): its
+     project and place, for a page that has no host's greeting to say them. The page's read. */
+  if (path === '/api/standalone' && method === 'GET') {
+    const id = (query.get('session') ?? '').slice(0, 64)
+    if (!PROGRAM.isId(id)) return bad('that is not a session id')
+    const found = await theRuns().standaloneOf(id)
+    return found ? ok({ ok: true, ...found }) : bad('No conversation by that id is running here or recorded in a project.', 404)
+  }
+
   /* This project's settings for this module: "Resume conversations cut off by a restart". A
      person's, through the page's ticket; no MCP tool reads or changes them. */
   if (path === '/api/settings' && method === 'GET') {

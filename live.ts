@@ -17,7 +17,7 @@ import { Gauges } from './gauges.ts'
 import { contextOf, type Context } from './meter.ts'
 import { isKehikkoKey, kehikkoOf, placeKey, sortedParts, type Kehikko } from './place.ts'
 import { cutOffs, cutOffWords, lastPrompt, midTurn, type CutOff } from './cutoff.ts'
-import { PROGRAM, TELLS, headOf, home, learnSession, recordFile, sessionName, type Active, type ActiveStatus, type HookGroup, type Program, type Running, type State } from './program.ts'
+import { PROGRAM, TELLS, folderOfRecord, headOf, home, learnSession, recordFile, sessionName, type Active, type ActiveStatus, type HookGroup, type Program, type Running, type State } from './program.ts'
 import { PLACE_TOKEN, assign, attach, born, byToken, follow, homeOf, isDetached, markSession, markSessions, note, projectRoot, readPlaces, readSettings, recordedIds, sighted, stayDetached, tokenFor, type NamedPlace, type PlaceEntry, type Places, type SessionEntry } from './record.ts'
 import { GUARD_TIMEOUT, contextScriptIn, guardScriptIn, removeKit, sessionKit, sweepKits, writeHooks, writeNotes, writeUnguarded } from './skills.ts'
 import { WorkQueueLookup, askedProviders, type FindProviders } from './workQueue.ts'
@@ -297,6 +297,8 @@ const ENTER_AFTER = 250
 const ASLEEP_FOR = 24 * 60 * 60_000
 /** How long a session resumed for a message is given to come to its prompt before what came is typed. */
 const RESUME_READY_MS = 60_000
+/** How long a task's start waits for Vibe to record the new conversation, so its own id can be answered. */
+const TASK_SETTLE_MS = 20_000
 /**
  * How long after a line is sent a report of the prompt from BEFORE it still counts, when nothing has
  * been reported since. Vibe 3.0.4 reports only a change (`take_program_report` keeps the last one),
@@ -1938,6 +1940,13 @@ export class Runs {
     const state = this.standing(run).state
     if (state !== 'idle' && state !== 'busy') return false
     if (!text.trim()) return false
+    this.typeInto(run, text)
+    this.log(`vibe: a message came for ${run.settled ?? run.id}, ${state === 'idle' ? 'idle at its prompt' : 'working'}; typed into it`)
+    return true
+  }
+
+  /** Text typed at a run's prompt as one bracketed paste, then Enter a moment later: a message (`deliver`), a task's brief (`startTask`). */
+  private typeInto(run: Run, text: string): void {
     const now = this.now()
     run.prompt = { chars: 0, sentAt: now + ENTER_AFTER }
     run.stirredAt = now
@@ -1946,8 +1955,6 @@ export class Runs {
     setTimeout(() => {
       if (!run.ended) run.pty.write('\r')
     }, ENTER_AFTER).unref?.()
-    this.log(`vibe: a message came for ${run.settled ?? run.id}, ${state === 'idle' ? 'idle at its prompt' : 'working'}; typed into it`)
-    return true
   }
 
   /**
@@ -3455,6 +3462,60 @@ export class Runs {
     this.markWorking(run.projectPath, run.settled, 'finished')
     kill(run.pty)
     return true
+  }
+
+  /**
+   * A NEW conversation for one of Kehikot's own tasks (protocol 2.88.0, `agent.tasks`): started the
+   * way a place starts one (`start`, as an open with no session and nobody looking), filed under
+   * `place` by itself once Vibe records it (`settle` → `born`), and fed `brief` as its first prompt —
+   * typed in at its prompt the way a message is (`typeInto`), once Vibe says it is there. Vibe takes
+   * no session id at start, so the id answered is the one it records the conversation under when
+   * that is known within the wait, else the id this module opened it under (which `find` and the
+   * page know it by while it runs). A brief that could not be typed ends the process: no task runs.
+   */
+  async startTask(projectPath: string, place: NamedPlace, brief: string, waitMs = { ready: RESUME_READY_MS, settle: TASK_SETTLE_MS }): Promise<{ ok: true; session: string } | { ok: false; why: string }> {
+    const root = projectRoot(projectPath)
+    if (!root.ok) return { ok: false, why: root.error }
+    this.know(root.value)
+    const id = this.program.newId()
+    const run = await this.start(root.value, id, { what: 'session', projectPath: root.value, projectId: projectIdAt(root.value), place, session: null, unwatched: true, cols: 120, rows: 40 })
+    if ('code' in run) return { ok: false, why: run.why }
+    /* Typed into on the person's behalf: never the untouched run a look opened (`UNTOUCHED_GRACE`). */
+    run.touched = true
+    const pause = () => new Promise((done) => setTimeout(done, 100))
+    const readyBy = Date.now() + waitMs.ready
+    while (!run.ended && !(run.status === 'idle' && run.prompt.chars === 0) && Date.now() < readyBy) await pause()
+    if (run.ended || run.status !== 'idle' || run.prompt.chars > 0) {
+      if (!run.ended) kill(run.pty)
+      return { ok: false, why: `${this.program.name} did not come to its prompt, so the brief was not given and nothing runs.` }
+    }
+    this.typeInto(run, brief)
+    this.log(`vibe: a task was started in ${root.value} (${id}); its brief was typed in at its prompt`)
+    const settleBy = Date.now() + waitMs.settle
+    while (!run.ended && !run.settled && Date.now() < settleBy) {
+      await this.settle(run).catch(() => {})
+      if (!run.settled) await pause()
+    }
+    return { ok: true, session: run.settled ?? run.id }
+  }
+
+  /**
+   * Where a conversation can be shown on its own (`/app?session=…`, the `agent.tasks` view): the
+   * project and place of a run this process holds, else of its record — the folder Vibe recorded it
+   * in, when that project's record of this module names it. Null when neither is known.
+   */
+  async standaloneOf(id: string): Promise<{ projectPath: string; projectId: string | null; place: NamedPlace; session: string } | null> {
+    const run = this.find(id)
+    if (run && !run.ended) return { projectPath: run.projectPath, projectId: run.projectId, place: run.at ?? run.place ?? { epic: null, parts: [], kehikko: null }, session: run.settled ?? run.id }
+    if (!this.program.isId(id)) return null
+    const folder = await folderOfRecord(id)
+    const root = folder ? projectRoot(folder) : null
+    if (!root?.ok) return null
+    const read = readPlaces(root.value)
+    if (!read.ok || !Object.hasOwn(read.value.sessions, id)) return null
+    const home = homeOf(read.value, id)
+    const place = home && Object.hasOwn(read.value.places, home) ? placeOf(read.value.places[home]!) : { epic: null, parts: [], kehikko: null }
+    return { projectPath: root.value, projectId: projectIdAt(root.value), place, session: id }
   }
 
   /** End everything: this process is stopping, and nothing it started may outlive it. */

@@ -163,6 +163,11 @@ describe('what a place holds', () => {
       const old = 'epic=thesis;parts=-;kehikko=3'
       const keyed = 'epic=thesis;parts=-;kehikko=key:4072c9e5'
       const file = join(dir, '.kehikot', 'vibe', 'places.json')
+      /* The first look at a project (what a restart cut off, `Runs.know`) is background work that
+         keeps its own mark in the record, once, whenever it happens to finish. It is let finish
+         before the record is taken as it was, so the test does not depend on how fast it runs. */
+      runs.know(dir)
+      await runs.recovered(dir)
       const before = readFileSync(file, 'utf8')
 
       /* Reading the keyed place finds nothing, and moves nothing. */

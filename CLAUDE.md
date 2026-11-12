@@ -1,7 +1,7 @@
 # Vibe — notes for agents
 
 A Kehikot module: a terminal holding the Mistral Vibe CLI session that belongs to a place (project,
-epic, picked parts, kehikko). The sibling of the Codex and Claude modules: the same record, page and
+space, kehikko). The sibling of the Codex and Claude modules: the same record, page and
 doors, with `program.ts` answering for Vibe. README.md says what it does and why, and what Vibe can
 and cannot do here.
 

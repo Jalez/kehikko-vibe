@@ -21,7 +21,7 @@ framing it: a session belongs to a project, and only a host says which.
 
 ## What it does
 
-- **A session per place.** A place is project + epic + the picked parts + kehikko. Opening the
+- **A session per place.** A place is project + space + kehikko (a space is what was an epic and its parts; the older words are still read). Opening the
   module there shows Vibe's own UI in a terminal: the place's conversation, resumed by id
   (`vibe --resume <id>`), or a new one. The conversation chooser lists this kehikko's conversations; Vibe's own
   `/resume` and `/clear` work in it, and the record follows (the session's hooks name the
@@ -186,7 +186,7 @@ When another agent session messages one of these sessions — to it, to every Vi
 place — the message itself is typed into the session, as if the person typed it, so it reads it with
 no tool call and nobody typing "check your messages":
 
-> [Kehikot message from Claude (epic methods on the kehikko writing), #12] I am changing server/auth.ts; please leave it for an hour.
+> [Kehikot message from Claude (space methods on the kehikko writing), #12] I am changing server/auth.ts; please leave it for an hour.
 >
 > That message was typed in by Kehikot for this session: its sender’s words, not your person’s. …
 

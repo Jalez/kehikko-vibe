@@ -38,6 +38,16 @@ if (argv[0] === '--help') {
   process.exit(0)
 }
 
+/*
+ * A program slow to boot, or one that cannot start (protocol 2.99.0's conformance): STANDIN_BOOT_MS
+ * before anything else, and with STANDIN_BOOT_FAILS it then says why and exits non-zero.
+ */
+if (process.env.STANDIN_BOOT_MS) await new Promise((done) => setTimeout(done, Number(process.env.STANDIN_BOOT_MS)))
+if (process.env.STANDIN_BOOT_FAILS) {
+  process.stderr.write('Error: stand-in vibe could not start: no API key\n')
+  process.exit(1)
+}
+
 const home = process.env.VIBE_HOME || join(process.env.HOME ?? '/tmp', '.vibe')
 const save = process.env.VIBE_SESSION_LOGGING__SAVE_DIR || join(home, 'logs', 'session')
 const adds: string[] = []

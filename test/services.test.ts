@@ -246,14 +246,31 @@ describe('start', () => {
     expect(w.ptys[0]!.typed.join('')).not.toContain('Review')
   })
 
-  test('the route answers the new conversation, the project level for a null place', async () => {
+  test('the route accepts at once, then starts it, the project level for a null place (protocol 2.99.0)', async () => {
     const dir = project()
     const asked: unknown[] = []
-    const door = serviceDoor({ ...needs({ startTask: async (...args) => (asked.push(args), { ok: true, session: A }) }) })
+    let reported: (params: unknown) => void = () => {}
+    const report = new Promise((done) => (reported = done))
+    const fetch = (async (_url: string, init?: RequestInit) => {
+      reported(JSON.parse(String(init?.body)).params)
+      return Response.json({ ok: true, data: { outcome: 'told', why: '' } })
+    }) as unknown as typeof globalThis.fetch
+    const door = serviceDoor({
+      ...needs({ startTask: async (...args) => (asked.push(args.slice(0, 3)), { ok: true, session: A }) }),
+      program: { ...PROGRAM, find: () => ({ file: '/fake/bin/vibe', looked: [], usual: [] }), newId: () => B },
+      report: { env: { KEHIKOT_HOST: 'http://127.0.0.1:4170' }, fetch, log: () => {} },
+    })
     const response = await door(new Request(`http://127.0.0.1${START_PATH}`, { method: 'POST', body: JSON.stringify({ project: dir, brief: 'Do it.', place: null, title: 'Adopt !4721' }) }), { url: new URL(`http://127.0.0.1${START_PATH}`), asker: 'program', ticket: null })
     expect(response!.status).toBe(200)
-    expect(await response!.json()).toEqual({ outcome: 'started', session: A, why: '' })
+    expect(await response!.json()).toEqual({ outcome: 'started', session: B, why: '', pending: true })
+    expect(await report).toEqual({ session: B, conversation: A, outcome: 'started', why: '' })
     expect(asked).toEqual([[dir, { epic: null, parts: [], kehikko: null }, 'Do it.']])
+  })
+
+  test('the route declines at once when Vibe is not installed', async () => {
+    const door = serviceDoor({ ...needs(), program: { ...PROGRAM, find: () => ({ file: null, looked: [], usual: [] }) } })
+    const response = await door(new Request(`http://127.0.0.1${START_PATH}`, { method: 'POST', body: JSON.stringify({ project: project(), brief: 'Do it.', place: null, title: 't' }) }), { url: new URL(`http://127.0.0.1${START_PATH}`), asker: 'program', ticket: null })
+    expect(await response!.json()).toMatchObject({ outcome: 'declined', session: null, pending: false })
   })
 })
 

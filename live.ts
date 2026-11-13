@@ -8,7 +8,7 @@ import type { Duplex } from 'node:stream'
 
 import { PROJECT_ID, projectFile, readProjectFile } from 'kehikot-module-protocol'
 import type { RunSockets } from 'kehikot-module-protocol/run'
-import { messageDelivery, mintTicket, pasted, sameTicket, watchKnownProjects, type DeliverySession, type KnownProjects, type KnownProjectsOptions } from 'kehikot-module-protocol/serve'
+import { messageDelivery, mintTicket, pasted, sameTicket, watchKnownProjects, type DeliverySession, type KnownProjects, type KnownProjectsOptions, startingHost } from 'kehikot-module-protocol/serve'
 import type { DeliveryState } from 'kehikot-module-protocol'
 import { RESEARCH_COMPLETE_EVENT, STALLED_EVENT, TURN_EVENTS, TURN_KINDS, TURN_REMINDER, toldReply, turnEnd, turnQuestion, turnReminder, type ActivityQuestion, type TurnEnd, type TurnKind, type TurnReminder } from 'kehikot-module-protocol'
 
@@ -24,7 +24,7 @@ import { GUARD_TIMEOUT, contextScriptIn, guardScriptIn, removeKit, sessionKit, s
 import { WorkQueueLookup, askedProviders, type FindProviders } from './workQueue.ts'
 import { sessionEnv, sessionFlags } from './settings.ts'
 import { REPLY, StatusReader, type Report } from './status.ts'
-import { configDirOf, doorEnv, freshToken, hostDoors, withOwnDoor, hostPlace, type DoorsAsked, type HostPlace, type SessionDoor } from './doorConfig.ts'
+import { configDirOf, doorEnv, freshToken, hostDoors, onStartingHost, withOwnDoor, hostPlace, type DoorsAsked, type HostPlace, type SessionDoor } from './doorConfig.ts'
 import { readPlaceKey } from './place.ts'
 import { AGENT_ID, AGENT_TYPE, FOUND_MOST, isResearch, subagentTask, type Found, type Told } from './research.ts'
 import { GUARD_MATCH, UNKNOWN, context, guard, startText, toldWords, unguardedHook, type GuardAnswer, type HookAnswer, type Said, type Started } from './context.ts'
@@ -1188,6 +1188,8 @@ export interface RunsOptions {
   fetch?: typeof fetch
   /** Where a session's folder (its kit, skills.ts) is made; this user's temporary folder by default. */
   configBase?: string
+  /** The host that started this module (`startingHost`, protocol 2.95.0): every door a session is given is on its stable address. From the start environment by default; a test names one. Null: nobody started it. */
+  host?: string | null
   /** Asks the host who provides the work queue (`askedProviders`, protocol 2.81.0); a test stands one in. Absent: none is provided. */
   services?: FindProviders
 }
@@ -1265,6 +1267,11 @@ export class Runs {
   private readonly gauges = new Gauges()
   /** What each run's viewers were last told of its context and whether Compact and Clear can be pressed. */
   private readonly metered = new WeakMap<Run, string>()
+
+  /** The host that started this module (protocol 2.95.0), or null when nobody did. */
+  host(): string | null {
+    return this.options.host !== undefined ? this.options.host : startingHost()
+  }
 
   constructor(private readonly options: RunsOptions) {
     this.program = options.program ?? PROGRAM
@@ -2547,7 +2554,7 @@ export class Runs {
       const door = { projectPath, projectId, token, kehikko }
       const said = this.options.doors ? null : await (this.options.place ?? hostPlace)(door).catch(() => null)
       /* This module's own door is always among them, with the token (`withOwnDoor`, Jalez/kehikko-claude#80). */
-      const got = withOwnDoor(said?.doors ?? (await (this.options.doors ?? hostDoors)(door).catch(() => null)), this.port(), token)
+      const got = withOwnDoor(said?.doors ?? (await (this.options.doors ?? hostDoors)(door).then((doors) => doors && onStartingHost(doors, this.host(), door.token)).catch(() => null)), this.host(), token)
       if (said?.modules) present = said.modules.map((one) => one.module)
       everywhere = said?.everywhere ?? null
       /* The skills the person wrote for this kehikko (protocol 2.53.0), from the same answer; a test's

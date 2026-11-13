@@ -9,9 +9,10 @@ import {
   type ConversationPlace,
   type ConversationsBringResult,
 } from 'kehikot-module-protocol'
-import { vouchHost, type Before } from 'kehikot-module-protocol/serve'
+import { acceptTask, vouchHost, type Before } from 'kehikot-module-protocol/serve'
 
 import { freshToken } from './doorConfig.ts'
+import { ID } from './manifest.ts'
 import { placeOf, theRuns, type Runs } from './live.ts'
 import { placeKey } from './place.ts'
 import { PROGRAM, type Program } from './program.ts'
@@ -52,6 +53,8 @@ export interface ServiceNeeds {
   program: Program
   runs: Pick<Runs, 'find' | 'running' | 'told' | 'startTask'>
   vouch: (headers: Headers) => Promise<{ ok: true } | { ok: false; why: string }>
+  /** Where `tasks.report` goes, for a test (the host this module was started by, otherwise). */
+  report?: { env?: Record<string, string | undefined>; fetch?: typeof fetch; log?: (line: string) => void }
 }
 
 
@@ -159,18 +162,32 @@ export async function bringConversation(raw: unknown, needs: ServiceNeeds): Prom
   return answer('brought', asked.to ? filedAt(written.value, id).place : null, '', resumed)
 }
 
-/** `start`: a new Vibe conversation in the project, fed the brief, filed under the place (null: the project's own level). */
+/**
+ * `start`: a new Vibe conversation in the project, fed the brief, filed under the place (null: the
+ * project's own level). Answered at once (protocol 2.99.0): declined when the folder is no project or
+ * Vibe is not installed, else ACCEPTED under the id its run will have, and Vibe is started after the
+ * answer — it boots, comes to its prompt (up to a minute), is typed the brief and names its
+ * conversation, which was longer than the host waits: the person was told Vibe did not answer while the
+ * conversation started anyway. What it came to goes to the host as `tasks.report`, said in the Inbox.
+ */
 export async function startTask(raw: unknown, needs: ServiceNeeds): Promise<{ status: number; body: AgentTaskStartResult | { ok: false; error: string } }> {
   const parsed = agentTaskStartParams.safeParse(raw)
   if (!parsed.success) return { status: 400, body: { ok: false, error: 'That is not a start: { project, brief, place, title }.' } }
   const asked = parsed.data
   const root = projectRoot(asked.project)
-  if (!root.ok) return { status: 200, body: { outcome: 'declined', session: null, why: root.error } }
+  if (!root.ok) return { status: 200, body: { outcome: 'declined', session: null, why: root.error.slice(0, 400), pending: false } }
+  if (!needs.program.find().file) return { status: 200, body: { outcome: 'declined', session: null, why: `${needs.program.name} is not installed on this computer.`, pending: false } }
   const place = asked.place ? namedPlace(asked.place) : { epic: null, parts: [], kehikko: null }
-  const started = await needs.runs.startTask(root.value, place, asked.brief)
-  return started.ok
-    ? { status: 200, body: { outcome: 'started', session: started.session, why: '' } }
-    : { status: 200, body: { outcome: 'declined', session: null, why: started.why.slice(0, 400) } }
+  const id = needs.program.newId()
+  const body = acceptTask(
+    id,
+    async () => {
+      const started = await needs.runs.startTask(root.value, place, asked.brief, undefined, id)
+      return started.ok ? { ok: true, conversation: started.session } : { ok: false, why: started.why.slice(0, 400) }
+    },
+    { module: ID, ...needs.report, log: needs.report?.log ?? ((line) => console.log(`vibe: ${line}`)) },
+  )
+  return { status: 200, body }
 }
 
 /** The largest body read: a brief is up to 32,000 characters, escaped in JSON. */
@@ -187,7 +204,7 @@ export function serviceDoor(given: Partial<ServiceNeeds> = {}): Before {
     const path = url.pathname
     if (path !== FIND_PATH && path !== BRING_PATH && path !== START_PATH) return undefined
     if (request.method !== 'POST') return json(405, { ok: false, error: 'this door takes POST' })
-    const needs: ServiceNeeds = { program: given.program ?? PROGRAM, runs: given.runs ?? theRuns(), vouch: given.vouch ?? ((headers) => vouchHost(headers)) }
+    const needs: ServiceNeeds = { program: given.program ?? PROGRAM, runs: given.runs ?? theRuns(), vouch: given.vouch ?? ((headers) => vouchHost(headers)), ...(given.report ? { report: given.report } : {}) }
     const vouched = await needs.vouch(request.headers)
     if (!vouched.ok) return json(403, { ok: false, error: vouched.why })
     let body: unknown

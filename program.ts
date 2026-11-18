@@ -211,9 +211,19 @@ export function sessionsRoot(env: NodeJS.ProcessEnv = process.env): string {
  * The places an install usually lands that a thin PATH leaves out: `uv tool`'s bin folder (where
  * the official installer puts `vibe`), Homebrew's, and Cargo's.
  */
+/**
+ * A place outside the home folder (Homebrew's prefixes). `KEHIKOT_VIBE_ROOT` puts them under a folder of
+ * its own, so a test looks in places that are empty rather than in this machine's real Homebrew (the home
+ * folder is already the test's own). Unset, as it is in the app, they are the real places.
+ */
+function onThisMachine(env: NodeJS.ProcessEnv, path: string): string {
+  const root = env.KEHIKOT_VIBE_ROOT ?? process.env.KEHIKOT_VIBE_ROOT
+  return root ? join(root, path) : path
+}
+
 function usualDirs(env: NodeJS.ProcessEnv): string[] {
   const at = home(env)
-  return [join(at, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', join(at, '.cargo', 'bin')]
+  return [join(at, '.local', 'bin'), onThisMachine(env, '/opt/homebrew/bin'), onThisMachine(env, '/usr/local/bin'), join(at, '.cargo', 'bin')]
 }
 
 /**
@@ -223,7 +233,7 @@ function usualDirs(env: NodeJS.ProcessEnv): string[] {
  */
 function toolDirs(env: NodeJS.ProcessEnv): string[] {
   const said = env.KEHIKOT_VIBE_TOOL_DIRS
-  return said === undefined ? [join(home(env), '.local', 'bin'), join(home(env), '.cargo', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'] : said.split(delimiter).filter(Boolean)
+  return said === undefined ? [join(home(env), '.local', 'bin'), join(home(env), '.cargo', 'bin'), onThisMachine(env, '/opt/homebrew/bin'), onThisMachine(env, '/usr/local/bin')] : said.split(delimiter).filter(Boolean)
 }
 
 /** PATH with the usual places added after it, so `uv` is found under the desktop app's thin one. */

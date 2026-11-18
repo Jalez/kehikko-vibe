@@ -5,7 +5,7 @@ import { delimiter, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 import { PROGRAM, TELLS, deniedWrite, firstPrompt, folderOfRecord, hasUv, headOf, home, installFor, labelOf, learnSession, metaOf, recordFile, sessionName, sessionsRoot, vibeHome } from '../program.ts'
-import { CONFIG, HOME } from './setup.ts'
+import { CONFIG, HOME, MACHINE } from './setup.ts'
 import { removeRollout, typed, writeRollout } from './transcripts.ts'
 
 /**
@@ -61,7 +61,7 @@ describe('finding the binary', () => {
     const none = PROGRAM.find({ HOME, PATH: '/usr/bin:/bin' })
     expect(none.file).toBeNull()
     expect(none.looked).toContain(join(HOME, '.local', 'bin'))
-    expect(none.looked).toContain('/opt/homebrew/bin')
+    expect(none.looked).toContain(join(MACHINE, '/opt/homebrew/bin'))
   })
 
   test('in ~/.local/bin, where `uv tool` puts it, and found by the next look once it appears', () => {
